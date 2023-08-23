@@ -1,0 +1,16 @@
+Thing,Lower RCS (m^2),Upper RCS (m^2),Lower RCS (dbsm),Upper RCS (dbsm),Mid (m^2),Source
+Insect,0.00001,0.001,-50,-30,0.0001,https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm
+F-22,0.0001,0.0002,-40,-36.98970004,0.0001414213562,http://faculty.nps.edu/jenn/ec4630/rcsredux.pdf
+F-35,0.0015,0.0015,-28.23908741,-28.23908741,0.0015,http://faculty.nps.edu/jenn/ec4630/rcsredux.pdf
+Bird,0.01,0.01,-20,-20,0.01,https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm
+B-2,0.001,0.1,-30,-10,0.01,"https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm#:~:text=A%20conventional%20fighter%20aircraft%20such,magintude%20greater%20than%20the%20widely"
+Typhoon,0.1,0.1,-10,-10,0.1,"https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm#:~:text=A%20conventional%20fighter%20aircraft%20such,magintude%20greater%20than%20the%20widely"
+Missile,0.5,0.5,-3.010299957,-3.010299957,0.5,"https://www.rfcafe.com/references/electrical/ew-radar-handbook/radar-cross-section.htm#:~:text=Typical%20radar%20cross%20sections%20are,log%20(RCS%20in%20m2)."
+Human,0.326,2.9,-4.867823999,4.623979979,0.9723168208,"https://pubmed.ncbi.nlm.nih.gov/19963624/#:~:text=The%20radar%20cross%20section%20(RCS,to%202.9%20m(2)."
+Mig29,3,5,4.771212547,6.989700043,3.872983346,"http://faculty.nps.edu/jenn/ec4630/rcsredux.pdf, https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm#:~:text=A%20conventional%20fighter%20aircraft%20such,magintude%20greater%20than%20the%20widely"
+Tactical Jet,5,100,6.989700043,20,22.36067977,"https://www.rfcafe.com/references/electrical/ew-radar-handbook/radar-cross-section.htm#:~:text=Typical%20radar%20cross%20sections%20are,log%20(RCS%20in%20m2)."
+Bomber,10,1000,10,30,100,"https://www.rfcafe.com/references/electrical/ew-radar-handbook/radar-cross-section.htm#:~:text=Typical%20radar%20cross%20sections%20are,log%20(RCS%20in%20m2)."
+Car,100,100,20,20,100,https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm
+B-52,100,125,20,20.96910013,111.8033989,"https://www.globalsecurity.org/military/world/stealth-aircraft-rcs.htm#:~:text=A%20conventional%20fighter%20aircraft%20such,magintude%20greater%20than%20the%20widely"
+DJI Phantom 2,0.001,0.01,-30,-20,0.00316227766,https://ieeexplore.ieee.org/abstract/document/7411928
+M6 Nut,0.0003141592654,0.0003141592654,-35.02850127,-35.02850127,0.0003141592654,https://www.farnell.com/datasheets/11588.pdf
