@@ -6,7 +6,7 @@ a kalman and particle filter.
 
 """
 
-# %%%
+# %%
 # Data fusion: comparison between Kalman and particle filters
 # -----------------------------------------------------------
 #
@@ -27,9 +27,9 @@ a kalman and particle filter.
 # --------------------------------------------------
 # Let's define the targets trajectories, assuming a simpler case
 # of a straight movement and the sensor specifics. We consider a
-# class radar elevation bearing range measuring from an altitude position
+# :class:`~.RadarBearingRange` calss measuring from an altitude position
 # and moving on a trajectory a radar in the same cartesian space as the
-# targets. The targets follow a simple trajectory.
+# targets. The targets follow a straight line trajectory for simplicity.
 #
 
 # General imports
@@ -162,21 +162,20 @@ from stonesoup.plotter import Plotterly, Plotter, Dimension
 #     radar_path.append(radar_simulator2.platforms[0].position)
 # # Generate the ground truth
 # truths = set(ground_truth_simulator.groundtruth_paths)
-
-# Plot the groundtruth and detections from the two radars
-#plotter = Plotter(dimension=Dimension.THREE)
-# plotter = Plotterly()
-# plotter.plot_ground_truths(truths, [0, 2, 4])
-# plotter.plot_measurements(s1_detections, [0, 2, 4])
-# plotter.plot_measurements(s2_detections, [0, 2, 4])
-# plotter.plot_sensors({sensor1_platform ,sensor2_platform}, [0, 1, 2]) # improve the plotting
 #
-# # plotter.plot_measurements(s1_detections, [0, 2, 4], marker= dict(color='orange', symbol='305'),
-# #                            measurements_label='Sensor 1 measurements')
-# # plotter.plot_measurements(s2_detections, [0, 2], marker= dict(color='blue', symbol='0'),
-# #                           measurements_label='Sensor 2 measurements')
-# # plotter.plot_sensors({sensor1_platform,sensor2_platform}, [0,1], marker= dict(color='black', symbol= '1',
-# #                                                                               size=10))
+# # Plot the groundtruth and detections from the two radars
+# plotter = Plotterly()
+# plotter.plot_ground_truths(truths, [0, 2])
+# # plotter.plot_measurements(s1_detections, [0, 2])
+# # plotter.plot_measurements(s2_detections, [0, 2])
+# # plotter.plot_sensors({sensor1_platform ,sensor2_platform}, [0, 1]) # improve the plotting
+#
+# plotter.plot_measurements(s1_detections, [0, 2], marker= dict(color='orange', symbol='305'),
+#                            measurements_label='Sensor 1 measurements')
+# plotter.plot_measurements(s2_detections, [0, 2], marker= dict(color='blue', symbol='0'),
+#                           measurements_label='Sensor 2 measurements')
+# plotter.plot_sensors({sensor1_platform,sensor2_platform}, [0,1], marker= dict(color='black', symbol= '1',
+#                                                                               size=10))
 # plotter.fig.show()
 
 # %%
@@ -184,8 +183,9 @@ from stonesoup.plotter import Plotterly, Plotter, Dimension
 # --------------------------------------------------------------
 # We have presented the scenario with two separate targets moving
 # and two sensors collecting the measurements. Now, we focus on
-# building the various tracker components: we use a :class:`~.DistanceHypothesiser`
-# hypothesiser using :class:.`Mahalanobis` distance measure.
+# building the various tracker components: we use a
+# :class:`~.DistanceHypothesiser`
+# hypothesiser using :class:`~.Mahalanobis` distance measure.
 # We consider an Extended Kalman filter and a
 # particle filter.
 #
@@ -204,7 +204,7 @@ from stonesoup.predictor.kalman import ExtendedKalmanPredictor
 # prepare the particle components
 from stonesoup.predictor.particle import ParticlePredictor
 from stonesoup.updater.particle import ParticleUpdater
-from stonesoup.resampler.particle import ESSResampler
+from stonesoup.resampler.particle import ESSResampler, MultinomialResampler
 
 from stonesoup.initiator.simple import SimpleMeasurementInitiator, GaussianParticleInitiator
 
@@ -226,7 +226,7 @@ hypothesiser_KF = DistanceHypothesiser(
 data_associator_KF = GNNWith2DAssignment(hypothesiser_KF)
 
 # define a track deleter based on time measurements
-deleter = UpdateTimeDeleter(timedelta(seconds=3), delete_last_pred= True)
+deleter = UpdateTimeDeleter(timedelta(seconds=5), delete_last_pred= True)
 
 # create an track initiator placed on the target tracks origin
 KF_initiator = MultiMeasurementInitiator(
@@ -240,7 +240,7 @@ KF_initiator = MultiMeasurementInitiator(
 # Instantiate the predictor, particle resampler and particle
 # filter updater
 PF_predictor = ParticlePredictor(transition_model)
-resampler = ESSResampler()
+resampler = ESSResampler(threshold=1000) # MultinomialResampler()
 PF_updater = ParticleUpdater(measurement_model= None,
                              resampler= resampler)
 
@@ -359,10 +359,10 @@ for t in range(number_of_steps):
     for detections in [detections_1, detections_2]:
 
         # Run the Kalman tracker
-        KF_tracker.detector = DummyDetector(current=detections)
-        KF_tracker.__iter__()
-        _, tracks = next(KF_tracker)
-        kf_tracks.update(tracks)
+        # KF_tracker.detector = DummyDetector(current=detections)
+        # KF_tracker.__iter__()
+        # _, tracks = next(KF_tracker)
+        # kf_tracks.update(tracks)
 
         # Run the Particle Tracker
         PF_tracker.detector = DummyDetector(current=detections)
@@ -370,7 +370,7 @@ for t in range(number_of_steps):
         _, tracks = next(PF_tracker)
         pf_tracks.update(tracks)
 
-        metric_manager.add_data({'KF_tracks': kf_tracks}, overwrite=False)
+#        metric_manager.add_data({'KF_tracks': kf_tracks}, overwrite=False)
         metric_manager.add_data({'PF_tracks': pf_tracks}, overwrite=False)
 
 truths = set(ground_truth_simulator.groundtruth_paths)
@@ -388,11 +388,11 @@ metric_manager.add_data({'truths': truths,
 plotter = Plotterly()
 plotter.plot_measurements(s1_detections, [0,2])
 plotter.plot_measurements(s2_detections, [0,2])
-plotter.plot_tracks(kf_tracks, [0,2,4], line= dict(color='black'), track_label='Kalman Filter')
-plotter.plot_tracks(pf_tracks, [0,2], line= dict(color='red'), track_label='PF Filter')
+#plotter.plot_tracks(kf_tracks, [0,2,4], line= dict(color='black'), track_label='Kalman Filter')
+plotter.plot_tracks(pf_tracks, [0,2], particle=False, line= dict(color='red'), track_label='PF Filter')
 plotter.plot_ground_truths(truths, [0,2])
 plotter.fig.show()
-
+sys.exit()
 # Loaded the plotter for the various metrics.
 from stonesoup.plotter import MetricPlotter
 
