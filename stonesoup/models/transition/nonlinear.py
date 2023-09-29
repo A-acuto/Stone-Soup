@@ -210,3 +210,59 @@ class ConstantTurnSandwich(ConstantTurn):
         C_t[-3:, 0:2] = C_ct[-3:, 0:2]
 
         return CovarianceMatrix(C_t)
+
+class EulerAnglesUOModel(GaussianTransitionModel):
+    r"""So this is the translation of the getEulerAngles
+        that is feed to get stacked TX model
+        it is a 15 dimension model
+        comprised of
+        x, y,z
+        vx, vy, vz
+        ax, ay, az
+        psi, theta, phi
+        dpsi, dtheta, dpi
+    """
+
+    # It uses Constant acceleration model
+    # it uses constant velocity model
+    # if K is equal to 0, then we don't use Ornstein and Uhlen
+    # otherwise
+
+    # we might not need the acceleration here but just the
+    # get euler angles bits
+
+
+    acceleration_noise_coeffs: np.ndarray = Property(
+        doc=r"Acceleration noise")
+    angles_noise_coeffs: np.ndarray = Property(
+        doc=r"Euler angles noise")
+    K_coeff: int = Property(
+        doc=r"Ornstein-Uhlenbeck coefficient to pull Euler angles"
+            r"in the direction of target travle")
+
+    # if K_coeff is 0 then use the constant accelearion and velocity model
+
+    @property
+    def ndim_state(self):
+        """ndim_state getter method
+
+        Returns
+        -------
+        : :class:`int`
+            The number of combined model state dimensions.
+        """
+        return 15 # this can be automatised and double checked that it
+    # it is working fine
+
+
+    def function(self):
+        # So this in theory should do the
+        # maths to compute the positions
+
+
+    def covar(self):
+        # this is instead the covariance matrix
+
+        return CovarianceMatrix(x)
+
+

@@ -1248,3 +1248,59 @@ class RangeRangeRateBinning(CartesianToElevationBearingRangeRate):
     def logpdf(self, *args, **kwargs):
         # As pdf replaced, need to go to first non GaussianModel parent
         return super(ReversibleModel, self).logpdf(*args, **kwargs)
+
+
+class AccelerometerGyroscopeMeasurementModel(LinearModel, LinearModel):
+    r"""This is an implementation of the
+    Gyroscope and acclerometer measurement model,
+    time varying model, this should transform
+    the (x,y,z) position, to (vx, vy, vz) velocity
+    to (ax, ay, az) accelerations.
+
+    """
+    position_z: float = Property(doc="Position accuracy")
+    velocity_resolution: float = Property(doc="Velocity accuracy")
+    acceleration_resolution: float = Property(doc="Acceleration accuracy")
+
+    @property
+    def ndim_meas(self): # this should be right
+        return 9
+
+    # I should use the constant acceleration model
+    # and velocity model
+
+    # in theory in this measurement model we need the
+    # number of dimensions, the mapping and the noise covaraince
+
+    # I can send the build_rotation_matrix (angles) angles being roll, pitch and yaw
+    def function(self, state, noise=False, **kwargs):
+        # I should do something for the various components
+
+        out = super().function(state, noise, **kwargs)
+
+        # Need to add the noise
+        if isinstance(noise, bool) or noise is None:
+            if noise:
+                out[2] = np.floor(out[2] / self.range_res) * self.range_res + self.range_res/2
+                out[3] = np.floor(out[3] / self.range_rate_res) * \
+                    self.range_rate_res + self.range_rate_res/2
+
+        return out
+
+    @classmethod
+    def _gaussian_integral(cls, a, b, mean, cov):
+        # this function is the cumulative probability ranging from a to b for a normal distribution
+        return (multivariate_normal.cdf(a, mean=mean, cov=cov)
+                - multivariate_normal.cdf(b, mean=mean, cov=cov))
+
+    @classmethod
+    def _binned_pdf(cls, measured_value, mean, bin_size, cov):
+        # this function finds the probability density of the bin the measured_value is in
+        a = np.floor(measured_value / bin_size) * bin_size + bin_size
+        b = np.floor(measured_value / bin_size) * bin_size
+        return cls._gaussian_integral(a, b, mean, cov)/bin_size
+
+
+    def logpdf(self, *args, **kwargs):
+        # As pdf replaced, need to go to first non GaussianModel parent
+        return super(ReversibleModel, self).logpdf(*args, **kwargs)
