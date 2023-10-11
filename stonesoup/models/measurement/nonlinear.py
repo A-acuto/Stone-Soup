@@ -13,6 +13,9 @@ from ...types.numeric import Probability
 from ...functions import cart2pol, pol2cart, \
     cart2sphere, sphere2cart, cart2angles, \
     build_rotation_matrix
+
+from stonesoup.functions.navigation import getForceVector, getAngularRotationVector
+
 from ...types.array import StateVector, CovarianceMatrix, StateVectors
 from ...types.angle import Bearing, Elevation
 from ..base import LinearModel, GaussianModel, ReversibleModel
@@ -1250,57 +1253,75 @@ class RangeRangeRateBinning(CartesianToElevationBearingRangeRate):
         return super(ReversibleModel, self).logpdf(*args, **kwargs)
 
 
-class AccelerometerGyroscopeMeasurementModel(LinearModel, LinearModel):
+class AccelerometerGyroscopeMeasurementModel(NonLinearGaussianMeasurement,
+                                             ReversibleModel):
     r"""This is an implementation of the
-    Gyroscope and acclerometer measurement model,
+    Gyroscope and accelerometer measurement model,
     time varying model, this should transform
-    the (x,y,z) position, to (vx, vy, vz) velocity
-    to (ax, ay, az) accelerations.
+    the (x,y,z) position, to (dx, dy, dz) velocity
+    to (ddx, ddy, ddz) accelerations.
+
+    Parameters
+    ----------
+    class:`~.State` object comprised of the ground
+            truth model where we can extract some measurements
+
+    Note
+    ----
+    The current implementation of this class assumes a 3D Cartesian plane.
 
     """
-    position_z: float = Property(doc="Position accuracy")
-    velocity_resolution: float = Property(doc="Velocity accuracy")
-    acceleration_resolution: float = Property(doc="Acceleration accuracy")
+
+    reference_frame: StateVector = Property(
+        default=None,
+        doc="Reference frame in latitude, longitude and altitude"
+    )
+
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set values to defaults if not provided
+        if self.reference_frame is None:
+            self.reference_frame = StateVector([0, 0, 0])
+
 
     @property
-    def ndim_meas(self): # this should be right
-        return 9
+    def ndim_meas(self):
+        return 15
 
-    # I should use the constant acceleration model
-    # and velocity model
 
-    # in theory in this measurement model we need the
-    # number of dimensions, the mapping and the noise covaraince
-
-    # I can send the build_rotation_matrix (angles) angles being roll, pitch and yaw
     def function(self, state, noise=False, **kwargs):
-        # I should do something for the various components
 
-        out = super().function(state, noise, **kwargs)
-
-        # Need to add the noise
         if isinstance(noise, bool) or noise is None:
             if noise:
-                out[2] = np.floor(out[2] / self.range_res) * self.range_res + self.range_res/2
-                out[3] = np.floor(out[3] / self.range_rate_res) * \
-                    self.range_rate_res + self.range_rate_res/2
+                noise = self.rvs(num_samples=state.state_vector.shape[1], **kwargs)
+            else:
+                noise = 0
 
-        return out
+        sv1 = state.state_vector
 
-    @classmethod
-    def _gaussian_integral(cls, a, b, mean, cov):
-        # this function is the cumulative probability ranging from a to b for a normal distribution
-        return (multivariate_normal.cdf(a, mean=mean, cov=cov)
-                - multivariate_normal.cdf(b, mean=mean, cov=cov))
+        angles_components = getAngularRotationVector(sv1,
+                                                     latLonAlt0=self.reference_frame)
 
-    @classmethod
-    def _binned_pdf(cls, measured_value, mean, bin_size, cov):
-        # this function finds the probability density of the bin the measured_value is in
-        a = np.floor(measured_value / bin_size) * bin_size + bin_size
-        b = np.floor(measured_value / bin_size) * bin_size
-        return cls._gaussian_integral(a, b, mean, cov)/bin_size
+        acceleration_components = getForceVector(sv1,
+                                                 latLonAlt0=self.reference_frame)
+        C = sv1
 
+        C[[2, 5, 8]] = acceleration_components
+        C[[10, 12, 14]] = angles_components
 
-    def logpdf(self, *args, **kwargs):
-        # As pdf replaced, need to go to first non GaussianModel parent
-        return super(ReversibleModel, self).logpdf(*args, **kwargs)
+        return StateVectors(C) + noise
+
+    def inverse_function(self, detection: 'Detection', **kwargs) -> StateVector:
+        # extract the information from the state vector
+        x, vx, ax, y, vy, ay, z, vz, az, psi, vpsi, theta, vtheta, phi, vphi  = detection.state_vector
+        xyz = StateVector((x, y, z))
+
+        # define the output vector
+        out_vector =np.zeros((self.ndim_meas, 1)).view(StateVector)
+
+        # fill the output vector with x,y,z positions
+        out_vector[self.mapping, :] = xyz
+
+        return out_vector
+
