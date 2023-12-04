@@ -2,7 +2,7 @@ from abc import ABC
 import copy
 from typing import Sequence, Tuple, Union
 
-from math import sqrt
+from math import sqrt, atan2, asin, acos
 import numpy as np
 from scipy.linalg import inv, pinv, block_diag
 from scipy.stats import multivariate_normal
@@ -14,10 +14,10 @@ from ...functions import cart2pol, pol2cart, \
     cart2sphere, sphere2cart, cart2angles, \
     build_rotation_matrix
 
-from stonesoup.functions.navigation import getForceVector, getAngularRotationVector
+from stonesoup.functions.navigation import getForceVector, getAngularRotationVector, angle_wrap
 
 from ...types.array import StateVector, CovarianceMatrix, StateVectors
-from ...types.angle import Bearing, Elevation
+from ...types.angle import Bearing, Elevation, Azimuth
 from ..base import LinearModel, GaussianModel, ReversibleModel
 from .base import MeasurementModel
 
@@ -419,6 +419,7 @@ class CartesianToBearingRange(NonLinearGaussianMeasurement, ReversibleModel):
         # Covert to polar
         rho, phi = cart2pol(*xyz_rot[:2, :])
         bearings = [Bearing(i) for i in phi]
+    #    print(StateVectors([bearings, rho]))
         return StateVectors([bearings, rho]) + noise
 
     def rvs(self, num_samples=1, **kwargs) -> Union[StateVector, StateVectors]:
@@ -1322,6 +1323,461 @@ class AccelerometerGyroscopeMeasurementModel(NonLinearGaussianMeasurement,
 
         # fill the output vector with x,y,z positions
         out_vector[self.mapping, :] = xyz
+
+        return out_vector
+
+
+
+class azimuth_elevation(NonLinearGaussianMeasurement,
+                                             ReversibleModel):
+
+    """
+        Modified to make it work
+    """
+    reference_frame: StateVector = Property(
+        default=None,
+        doc="Reference frame in latitude, longitude and altitude"
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set values to defaults if not provided
+        if self.reference_frame is None:
+            self.reference_frame = StateVector([0, 0, 0])
+
+    @property
+    def ndim_meas(self):
+        return 6  # technically we just need the
+
+    @property
+    def ndim_state(self) -> int:
+        """artificially added"""
+        return 15
+
+    def function(self, state,
+                 noise=False,
+                 **kwargs) -> Union[StateVector, StateVectors]:
+
+        pos_mapping = np.array([0, 2, 4])
+        sensor_mapping = np.array([0, 3, 6]) + 6
+
+        if isinstance(noise, bool) or noise is None:
+            if noise:
+                noise = self.rvs(num_samples=state.state_vector.shape[1], **kwargs)
+            else:
+                noise = 0
+
+        # removed because it is not relevant now
+        # diff_position = np.array([state.state_vector[pos_mapping] -
+        #                           state.state_vector[sensor_mapping]]).reshape(-1)
+        #
+        # rg = np.sqrt(diff_position[0] * diff_position[0] +
+        #              diff_position[1] * diff_position[1] +
+        #              diff_position[2] * diff_position[2])
+        #
+        # absolute_azimuth = np.array(atan2(diff_position[1], diff_position[0])).reshape(-1,1)
+        # absolute_elevation = np.array(asin(diff_position[2] / rg)).reshape(-1,1)
+        #
+        # heading = np.array(np.radians(state.state_vector[15])).reshape(-1, 1)
+        # pitch = np.array(np.radians(state.state_vector[17])).reshape(-1, 1)
+        #
+        # azms = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in enumerate(absolute_azimuth)][0]
+        # elevs = [Elevation(angle - pitch[index]) for index, angle in enumerate(absolute_elevation)][0]
+
+        angles_components = getAngularRotationVector(state.state_vector,
+                                                     latLonAlt0=self.reference_frame)
+
+        acceleration_components = getForceVector(state.state_vector,
+                                                 latLonAlt0=self.reference_frame)
+        #
+        # C[[2, 5, 8]] = acceleration_components
+        # C[[10, 12, 14]] = angles_components
+
+        # Add the mixture of data
+        return StateVectors([*acceleration_components,
+                                     *angles_components]) + noise
+
+
+    def inverse_function(self, detection: 'Detection', **kwargs) -> StateVector:
+        # don't know if it is the right one
+        # extract the information from the state vector
+        # x, vx, ax, y, vy, ay, z, vz, az, psi, vpsi, theta, vtheta, phi, vphi  = detection.state_vector
+        # xyz = StateVector((x, y, z))
+
+        # define the output vector
+        out_vector =np.zeros((15, 1)).view(StateVector)
+
+        # fill the output vector with x,y,z positions
+ #       out_vector[self.mapping, :] = xyz
+
+        return out_vector
+
+    def rvs(self, num_samples=1, **kwargs) -> Union[StateVector, StateVectors]:
+        out = super().rvs(num_samples, **kwargs)
+        out = np.array([[0], [0], [0], [0], [0], [0]]) + out
+        return out
+
+
+class azimuth_elevation_fixed_targets(NonLinearGaussianMeasurement,
+                                             ReversibleModel):
+
+    """
+        The idea is to use the azimuth elevation model but instead of
+        passing the existing state just refer it back to it
+    """
+
+    reference_frame: StateVector = Property(
+        default=None,
+        doc="Reference frame in latitude, longitude and altitude"
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set values to defaults if not provided
+        if self.reference_frame is None:
+            self.reference_frame = StateVector([0, 0, 0])
+
+    @property
+    def ndim_meas(self):
+        return 16  # technically we just need the
+
+    @property
+    def ndim_state(self) -> int:
+        """artificially added"""
+        return 15
+
+    def function(self, state,
+                 noise=False,
+                 **kwargs) -> Union[StateVector, StateVectors]:
+
+        pos_mapping = np.array([0, 2, 4])
+        sensor_mapping = np.array([0, 3, 6]) #+ 6 # ideally we don't need it
+
+        angles_components = getAngularRotationVector(state.state_vector,
+                                                     latLonAlt0=self.reference_frame)
+
+        acceleration_components = getForceVector(state.state_vector,
+                                                 latLonAlt0=self.reference_frame)
+        npts = state.state_vector.shape[1]
+
+        if isinstance(noise, bool) or noise is None:
+            if noise:
+                noise = self.rvs(num_samples=state.state_vector.shape[1], **kwargs)
+            else:
+                noise = 0
+
+        azms = np.zeros((1, npts))
+        elevs = np.zeros((1, npts))
+        azms1 = np.zeros((1, npts))
+        elevs1 = np.zeros((1, npts))
+        azms2 = np.zeros((1, npts))
+        elevs2 = np.zeros((1, npts))
+        azms3 = np.zeros((1, npts))
+        elevs3 = np.zeros((1, npts))
+        azms4 = np.zeros((1, npts))
+        elevs4 = np.zeros((1, npts))
+
+        for ipoint in range(npts):
+            sensor_loc = state.state_vector[sensor_mapping, ipoint]
+            diff_position = np.array([np.array([3000, 3000, 0.0096])-
+                                       sensor_loc]).reshape(-1)
+
+            diff_position1 = np.array([np.array([-3000, -3000, 1.6034])-
+                                       sensor_loc]).reshape(-1)
+
+            diff_position2 = np.array([np.array([0, 0, 0.93])-
+                                       sensor_loc]).reshape(-1)
+
+            diff_position3 = np.array([np.array([3000, -3000, 0.12])-
+                                       sensor_loc]).reshape(-1)
+
+            diff_position4 = np.array([np.array([-3000, 3000, 0.41]) -
+                                       sensor_loc]).reshape(-1)
+
+            rg = np.sqrt(diff_position[0] * diff_position[0] +
+                         diff_position[1] * diff_position[1] +
+                         diff_position[2] * diff_position[2])
+
+            rg1 = np.sqrt(diff_position1[0]*diff_position1[0] +
+                          diff_position1[1]*diff_position1[1] +
+                          diff_position1[2]*diff_position1[2])
+
+            rg2 = np.sqrt(diff_position2[0] * diff_position2[0] +
+                         diff_position2[1] * diff_position2[1] +
+                         diff_position2[2] * diff_position2[2])
+
+            rg3 = np.sqrt(diff_position3[0] * diff_position3[0] +
+                         diff_position3[1] * diff_position3[1] +
+                         diff_position3[2] * diff_position3[2])
+
+            rg4 = np.sqrt(diff_position4[0] * diff_position4[0] +
+                          diff_position4[1] * diff_position4[1] +
+                          diff_position4[2] * diff_position4[2])
+
+            absolute_azimuth = np.array(atan2(diff_position[1], diff_position[0])).reshape(-1,1)
+            absolute_elevation = np.array(asin(diff_position[2]/rg)).reshape(-1,1)
+
+            absolute_azimuth1 = np.array(atan2(diff_position1[1], diff_position1[0])).reshape(-1, 1)
+            absolute_elevation1 = np.array(asin(diff_position1[2]/rg1)).reshape(-1, 1)
+
+            absolute_azimuth2 = np.array(atan2(diff_position2[1], diff_position2[0])).reshape(-1, 1)
+            absolute_elevation2 = np.array(asin(diff_position2[2]/rg2)).reshape(-1, 1)
+
+            absolute_azimuth3 = np.array(atan2(diff_position3[1], diff_position3[0])).reshape(-1, 1)
+            absolute_elevation3 = np.array(asin(diff_position3[2]/rg3)).reshape(-1, 1)
+
+            absolute_azimuth4 = np.array(atan2(diff_position4[1], diff_position4[0])).reshape(-1, 1)
+            absolute_elevation4 = np.array(asin(diff_position4[2]/rg4)).reshape(-1, 1)
+
+            heading = np.array(np.radians(state.state_vector[9, ipoint])).reshape(-1, 1)
+            pitch = np.array(np.radians(state.state_vector[11, ipoint])).reshape(-1, 1)
+
+            azms[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                               enumerate(absolute_azimuth)]
+            elevs[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                enumerate(absolute_elevation)]
+
+            azms1[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                                enumerate(absolute_azimuth1)]
+            elevs1[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                 enumerate(absolute_elevation1)]
+
+            azms2[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                                enumerate(absolute_azimuth2)]
+            elevs2[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                 enumerate(absolute_elevation2)]
+
+            azms3[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                                   enumerate(absolute_azimuth3)]
+            elevs3[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                 enumerate(absolute_elevation3)]
+            azms4[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                                enumerate(absolute_azimuth4)]
+            elevs4[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                 enumerate(absolute_elevation4)]
+
+
+        return StateVectors([*acceleration_components,
+                             *angles_components,
+                             *azms, *elevs,
+                             *azms1, *elevs1,
+                             *azms2, *elevs2,
+                             *azms3, *elevs3,
+                             *azms4, *elevs4]) + noise
+
+    def rvs(self, num_samples=1, **kwargs) -> Union[StateVector, StateVectors]:
+        out = super().rvs(num_samples, **kwargs)
+        out = np.array([[0.], [0.], [0.],
+                        [0.], [0.], [0.],
+                        [Azimuth(0.)], [Elevation(0.)],
+                        [Azimuth(0.)], [Elevation(0.)],
+                        [Azimuth(0.)], [Elevation(0.)],
+                        [Azimuth(0.)], [Elevation(0.)],
+                        [Azimuth(0.)], [Elevation(0.)]]) + out
+        return out
+
+        # return StateVector(np.array([
+        #                              *acceleration_components,
+        #                              *angles_components]))
+
+
+    def inverse_function(self, detection: 'Detection', **kwargs) -> StateVector:
+        # don't know if it is the right one
+        # extract the information from the state vector
+        # x, vx, ax, y, vy, ay, z, vz, az, psi, vpsi, theta, vtheta, phi, vphi  = detection.state_vector
+        # xyz = StateVector((x, y, z))
+
+        # define the output vector
+        out_vector =np.zeros((15, 1)).view(StateVector)
+
+        # fill the output vector with x,y,z positions
+ #       out_vector[self.mapping, :] = xyz
+
+        return out_vector
+
+
+
+class azel_fixed_target(NonLinearGaussianMeasurement):
+    """
+        add a single azimuth elevation model to make it work
+    """
+
+    reference_frame: StateVector = Property(
+        default=None,
+        doc="Reference frame in latitude, longitude and altitude"
+    )
+    target_location: StateVector = Property(
+        default=StateVector([0, 0, 0]),
+        doc="Target as beacon observed by the sensor"
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set values to defaults if not provided
+        if self.reference_frame is None:
+            self.reference_frame = StateVector([0, 0, 0])
+
+
+    @property
+    def ndim_meas(self):
+        return 2  # technically we just need the - Azimuth and Elevation
+
+    @property
+    def ndim_state(self) -> int:
+        """artificially added, the state is the 15 """
+        return 15
+
+    # Ok each one of the targets are there
+    def function(self, state,
+                 noise=False,
+                 **kwargs) -> Union[StateVector, StateVectors]:
+
+        if isinstance(noise, bool) or noise is None:
+            if noise:
+                noise = self.rvs(num_samples=state.state_vector.shape[1], **kwargs)
+            else:
+                noise = 0
+
+        sensor_mapping = np.array([0, 3, 6]) #+ 6 # ideally we don't need it
+
+        npts = state.state_vector.shape[1]
+
+        azms = np.zeros((1, npts))
+        elevs = np.zeros((1, npts))
+
+        for ipoint in range(npts):
+            sensor_loc = state.state_vector[sensor_mapping, ipoint]
+            diff_position = np.array([self.target_location -
+                                      sensor_loc]).reshape(-1)
+
+            rg = np.sqrt(diff_position[0] * diff_position[0] +
+                         diff_position[1] * diff_position[1] +
+                         diff_position[2] * diff_position[2])
+
+            absolute_azimuth = np.array(atan2(diff_position[1], diff_position[0])).reshape(-1,1)
+            absolute_elevation = np.array(asin(diff_position[2] / rg)).reshape(-1,1)
+
+            heading = np.array(np.radians(state.state_vector[9, ipoint])).reshape(-1, 1)
+            pitch = np.array(np.radians(state.state_vector[11, ipoint])).reshape(-1, 1)
+
+            azms[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                               enumerate(absolute_azimuth)]
+            elevs[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                enumerate(absolute_elevation)]
+
+        return StateVectors([*azms,
+                             *elevs]) + noise
+
+    def inverse_function(self, detection: 'Detection', **kwargs) -> StateVector:
+        # don't know if it is the right one
+        # extract the information from the state vector
+        # x, vx, ax, y, vy, ay, z, vz, az, psi, vpsi, theta, vtheta, phi, vphi  = detection.state_vector
+        # xyz = StateVector((x, y, z))
+
+        # define the output vector
+        out_vector = np.zeros((15, 1)).view(StateVector)
+
+        # fill the output vector with x,y,z positions
+        #       out_vector[self.mapping, :] = xyz
+
+        return out_vector
+
+    def rvs(self, num_samples=1, **kwargs) -> Union[StateVector, StateVectors]:
+        out = super().rvs(num_samples, **kwargs)
+        out = np.array([[Azimuth(0.)], [Elevation(0.)]]) + out
+        return out
+
+
+class azimuth_elevation_fixed_target(NonLinearGaussianMeasurement,
+                                             ReversibleModel):
+
+    """
+        The idea is to use the azimuth elevation model but instead of
+        passing the existing state just refer it back to it
+    """
+
+    reference_frame: StateVector = Property(
+        default=None,
+        doc="Reference frame in latitude, longitude and altitude"
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set values to defaults if not provided
+        if self.reference_frame is None:
+            self.reference_frame = StateVector([0, 0, 0])
+
+    @property
+    def ndim_meas(self):
+        return 2  # technically we just need the
+
+    @property
+    def ndim_state(self) -> int:
+        """artificially added"""
+        return 4
+
+    def function(self, state,
+                 noise=False,
+                 **kwargs) -> Union[StateVector, StateVectors]:
+
+        pos_mapping = np.array([0, 2, 4])
+        sensor_mapping = np.array([0, 3, 6]) #+ 6 # ideally we don't need it
+
+        angles_components = getAngularRotationVector(state.state_vector,
+                                                     latLonAlt0=self.reference_frame)
+
+        acceleration_components = getForceVector(state.state_vector,
+                                                 latLonAlt0=self.reference_frame)
+        npts = state.state_vector.shape[1]
+
+        azms = np.zeros((1, npts))
+        elevs = np.zeros((1, npts))
+
+        for ipoint in range(npts):
+            sensor_loc = state.state_vector[sensor_mapping, ipoint]
+            diff_position = np.array([np.array([-171.46, -47.16, -0.93]) - sensor_loc]).reshape(-1)
+
+            rg = np.sqrt(diff_position[0] * diff_position[0] +
+                         diff_position[1] * diff_position[1] +
+                         diff_position[2] * diff_position[2])
+
+            absolute_azimuth = np.array(atan2(diff_position[1], diff_position[0])).reshape(-1,1)
+            absolute_elevation = np.array(asin(diff_position[2] / rg)).reshape(-1,1)
+
+            heading = np.array(np.radians(state.state_vector[9, ipoint])).reshape(-1, 1)
+            pitch = np.array(np.radians(state.state_vector[11, ipoint])).reshape(-1, 1)
+
+            azms[:, ipoint] = [Azimuth(angle_wrap(angle - heading[index])) for index, angle in
+                               enumerate(absolute_azimuth)]
+            elevs[:, ipoint] = [Elevation(angle - pitch[index]) for index, angle in
+                                enumerate(absolute_elevation)]
+
+        print(sensor_loc, np.array([-171.46, -47.16, -0.93]))
+        print(rg)
+        print(heading)
+        print(pitch)
+        print(absolute_azimuth)
+        sys.exit()
+        return StateVectors([*azms,
+                             *elevs,
+            *acceleration_components,
+            *angles_components])
+        # return StateVector(np.array([
+        #                              *acceleration_components,
+        #                              *angles_components]))
+
+
+    def inverse_function(self, detection: 'Detection', **kwargs) -> StateVector:
+        # don't know if it is the right one
+        # extract the information from the state vector
+        # x, vx, ax, y, vy, ay, z, vz, az, psi, vpsi, theta, vtheta, phi, vphi  = detection.state_vector
+        # xyz = StateVector((x, y, z))
+
+        # define the output vector
+        out_vector =np.zeros((15, 1)).view(StateVector)
+
+        # fill the output vector with x,y,z positions
+ #       out_vector[self.mapping, :] = xyz
 
         return out_vector
 

@@ -491,7 +491,7 @@ def localSphere2GCS(xEast, yNorth, zUp, origin):
     lat0, lon0, alt0 = origin
 
     # The reference ellipsoid is WGS-84
-    # we use the pymap3d enu2geodetic to obatin the results
+    # we use the pymap3d enu2geodetic to obtain the results
     latitude, longitude, altitude = pymap3d.enu2geodetic(xEast, yNorth, zUp,
                                                          lat0, lon0, alt0)
 
@@ -811,3 +811,29 @@ def sde_euler_maruyama_integration(fun, t_values, state_x0):
         a, b = fun(state_x, t)
         state_x.state_vector = state_x.state_vector + a*delta_t + b@delta_w
     return state_x.state_vector
+
+
+def slr_definition(state_pdf, prediction):
+    """ Statistical linear regression (SLR), implements the definition (9)-(11) as found in
+    Á. F. García-Fernández, L. Svensson and S. Särkkä, "Iterated Posterior Linearization Smoother,"
+    in IEEE Transactions on Automatic Control, vol. 62, no. 4, pp. 2056-2063, April 2017, doi: 10.1109/TAC.2016.2592681.
+    """
+
+    # First two moments of the state pdf
+    x_bar = state_pdf.state_vector
+    p_matrix = state_pdf.covar
+
+    # The predicted quantities wrt the state pdf (e.g. using sigma points)
+    z_bar = prediction.state_vector
+    # next quantity (psi) is naturally available in GaussianMeasurementPrediction for predicted measurements,
+    # but has been introduced to AugmentedGaussianStatePrediction for state predictions
+    psi = prediction.cross_covar
+    phi = prediction.covar
+
+    # Statistical linear regression parameters of a function predicted with the quantities above
+    H_plus = psi.T @ np.linalg.inv(p_matrix)
+    b_plus = z_bar - H_plus @ x_bar
+    Omega_plus = phi - H_plus @ p_matrix @ H_plus.T
+
+    # The output is the function's SLR with respect to the state_pdf
+    return H_plus, b_plus, Omega_plus

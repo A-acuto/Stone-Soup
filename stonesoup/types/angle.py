@@ -227,6 +227,15 @@ class Longitude(Bearing):
     Multiplication or division produces a float object rather than Longitude.
     """
 
+class Azimuth(Angle):
+    """Azimuth angle class.
+    Azimuth handles modulo arithmetic for adding and subtracting angles. \
+    The return type for addition and subtraction is Azimuth.
+    Multiplication or division produces a float object rather than Azimuth.
+    """
+    @staticmethod
+    def mod_angle(value):
+        return mod_bearing(value)
 
 class Latitude(Elevation):
     """Latitude angle class.

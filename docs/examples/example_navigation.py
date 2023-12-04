@@ -292,6 +292,8 @@ from stonesoup.types.hypothesis import SingleHypothesis
 
 track = Track()
 
+from sklearn.metrics import mean_squared_error
+
 # Loop over the measurement
 for k, measurement in enumerate(measurement_set):
     predictions = predictor.predict(prior, timestamp=measurement.timestamp)
@@ -299,6 +301,20 @@ for k, measurement in enumerate(measurement_set):
     post = updater.update(hyps)
     track.append(post)
     prior = track[-1]
+
+target, est = np.zeros((3, 100)), np.zeros((3, 100))
+
+for j in range(100):
+    print(j)
+    est = np.array([track[j].state_vector[0],
+                       track[j].state_vector[3],
+                       track[j].state_vector[6]])
+    target = np.array([truths[j].state_vector[0],
+                    truths[j].state_vector[3],
+                    truths[j].state_vector[6]])
+
+
+print(np.sqrt(mean_squared_error(target, est)))
 
 # %%
 # Load the plotter

@@ -4,9 +4,13 @@ Navigation functions
 """
 
 import numpy as np
-
+from math import pi
 from . import localSphere2GCS
 
+def angle_wrap(angle):
+    """ Fix the angle on the if gets over the threshold
+    """
+    return np.remainder(angle+pi, 2.*pi) - pi
 
 def earthSpeedFlatSq(dx, dy):
     r"""Calculate the Earth speed flat vector respect to the reference
@@ -104,8 +108,8 @@ def getEulersAngles(earthSpeed, earthAcceleration):
     Ess = earthSpeedSq(dx, dy, dz)
 
     psi = np.degrees(np.arctan2(dy, dx))
-    Theta = np.degrees(np.arctan2(-dz, Esf))
-    Phi = 0.
+    Theta = np.degrees(np.arctan2(-dz,Esf))
+    Phi = np.degrees(0.)
 
     composite_euler_angles = np.array([psi, Theta, Phi])
 
@@ -114,12 +118,16 @@ def getEulersAngles(earthSpeed, earthAcceleration):
     # in case of acceleration different from 0
     if earthAcceleration.any() > 0:
 
-        dPsi = np.degrees(np.divide((np.multiply(dx, ddy) -
-                                     np.multiply(dy, ddx)), Esfq))
-        dTheta = np.degrees(np.divide(np.multiply(dz,
-                                                  (np.multiply(dx, ddx) +
-                                                   np.multiply(dy, ddy))), Esf) -
-                            np.divide(np.multiply(ddz, Esf), Ess))
+        num_dpsi = np.multiply(dx, ddy) - np.multiply(dy, ddx)
+        dPsi = np.degrees(np.divide(num_dpsi, Esfq))
+
+        num_dtheta = np.divide(np.multiply(dz,
+                                           (np.multiply(dx, ddz) +
+                                            np.multiply(dy, ddy))
+                                           ), Esf) -\
+                     np.multiply(ddz, Esf)
+
+        dTheta = np.degrees(np.divide(num_dtheta, Ess))
         dPhi = np.degrees(0)
         composite_euler_acc_angles = np.array([dPsi, dTheta, dPhi])
 
@@ -170,6 +178,7 @@ def euler2rotationVector(psiThetaPhi_deg, dpsiThetaPhi_deg):
                       [0, np.cos(phi_rad), np.sin(phi_rad) * np.cos(theta_rad)],
                       [0, -np.sin(phi_rad), np.cos(phi_rad) * np.cos(theta_rad)]
                       ])
+
         omega_deg[:, ipoint] = np.matmul(R, dpsiThetaPhi_deg[:, ipoint].reshape(-1, 1))[:, 0]
     return omega_deg
 
@@ -196,9 +205,14 @@ def getAngularRotationVector(states, latLonAlt0):
     npts = states.shape[1]
 
     # Coordinates in navigation reference frame
-    localpos = states[[0, 3, 6], :]  # use the indices of the position
-    psiThetaPhi_deg = states[[9, 11, 13], :]  # use the indices of the Euler angles
-    dpsiThetaPhi_deg = states[[10, 12, 14], :] # use the indices of the dEuler
+    if len(states)>15:
+        localpos = states[[6, 9, 12], :]  # use the indices of the position
+        psiThetaPhi_deg = states[[15, 17, 19], :]  # use the indices of the Euler angles
+        dpsiThetaPhi_deg = states[[16, 18, 20], :] # use the indices of the dEuler
+    else:
+        localpos = states[[0, 3, 6], :]  # use the indices of the position
+        psiThetaPhi_deg = states[[9, 11, 13], :]  # use the indices of the Euler angles
+        dpsiThetaPhi_deg = states[[10, 12, 14], :]  # use the indices of the dEuler
 
     # Convert the local reference point to latitude and longitude
     lat_deg, _, _ = localSphere2GCS(localpos[0, :],
@@ -341,17 +355,24 @@ def getForceVector(state, latLonAlt0):
     npts = state.shape[1]
 
     # coordinates in local navigation frame
-    localpos = state[[0, 3, 6], :]
-    localvel = state[[1, 4, 7], :]
-    localacc = state[[2, 5, 8], :]
+    if len(state)> 15:
+        localpos = state[[6, 9, 12], :]
+        localvel = state[[7, 10, 13], :]
+        localacc = state[[8, 11, 14], :]
 
-    psiThetaPhi_deg = state[[9, 11, 13], :]
+        psiThetaPhi_deg = state[[15, 17, 19], :]
+    else:
+        localpos = state[[0, 3, 6], :]
+        localvel = state[[1, 4, 7], :]
+        localacc = state[[2, 5, 8], :]
+
+        psiThetaPhi_deg = state[[9, 11, 13], :]
 
     lat_deg, _, alt = localSphere2GCS(localpos[0, :],
                                       localpos[1, :],
                                       localpos[2, :],
-                                      latLonAlt0)
-
+                                    latLonAlt0)
+ #   print(lat_deg, localpos[0, :], localpos[1, :], localpos[2, :])
     # create a force matrix
     fb = np.zeros((3, npts))
 
