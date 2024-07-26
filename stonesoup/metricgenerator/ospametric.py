@@ -9,7 +9,9 @@ from ..measures import Measure, Euclidean
 from ..types.state import State, StateMutableSequence
 from ..types.time import TimeRange
 from ..types.metric import SingleTimeMetric, TimeRangeMetric
-
+from stonesoup.measures import KLDivergence
+from ..types.state import ParticleState, GaussianState
+#import keyboard
 
 class _SwitchingLoss:
     """
@@ -123,13 +125,25 @@ class GOSPAMetric(MetricGenerator):
         -------
         : list of :class:`~.State`
         """
-
         state_list = StateMutableSequence()
         ids = []
+        '''
         for i, element in enumerate(list(object_with_states)):
             if isinstance(element, StateMutableSequence):
                 state_list.extend(element.states)
                 ids.extend([i]*len(element.states))
+            elif isinstance(element, State):
+                state_list.append(element)
+                ids.extend([i])
+            else:
+                raise ValueError(
+                    "{!r} has no state extraction method".format(element))
+        '''
+        for i, element in enumerate(list(object_with_states)):
+            if isinstance(element, StateMutableSequence):
+                states = list(element.last_timestamp_generator())
+                state_list.extend(states)
+                ids.extend([i] * len(states))
             elif isinstance(element, State):
                 state_list.append(element)
                 ids.extend([i])
@@ -177,22 +191,32 @@ class GOSPAMetric(MetricGenerator):
             meas_points = meas_points[meas_mask]
 
             meas_ids = np.array(measured_state_ids)[meas_mask]
-
+            print(meas_points[0].state_vector, meas_points[1].state_vector)
+            print(meas_ids)
             truth_mask = [state.timestamp == timestamp for state in truth_states]
             truth_points = np.array(truth_states)[truth_mask]
             truth_ids = np.array(truth_state_ids)[truth_mask]
+            print(truth_points[0].state_vector, truth_points[1].state_vector)
+            print(truth_ids)
+            print('gospa')
 
             metric, truth_to_measured_assignment = self.compute_gospa_metric(
                     meas_points, truth_points)
+
             truth_mapping = {
                 truth_id: meas_ids[meas_id] if meas_id != -1 else None
                 for truth_id, meas_id in zip(truth_ids, truth_to_measured_assignment)}
-
             switching_metric.add_associations(truth_mapping)
+
             metric.value['switching'] = switching_metric.loss()
             metric.value['distance'] = np.power(metric.value['distance']**self.alpha +
                                                 metric.value['switching']**self.alpha,
                                                 1.0/self.alpha)
+            ############# This two lines have been added by Amir in order to make the GOSPA Metric work##########
+            metric.metadata = metric.value              # Amir
+            metric.value = metric.value['distance']     # Amir
+            ###########################################     End ########################################
+
             gospa_metrics.append(metric)
 
         # If only one timestamp is present then return a SingleTimeMetric
@@ -407,7 +431,8 @@ class GOSPAMetric(MetricGenerator):
             for i in range(num_truth_states):
                 if truth_to_measured_assignment[i] != unassigned_index:
                     opt_cost += cost_matrix[i, truth_to_measured_assignment[i]]
-
+                    print(cost_matrix)
+                    sys.exit()
                     if self.alpha == 2:
                         const_assign = truth_to_measured_assignment[i]
                         const_cmp = (-1 * self.c**self.p)
@@ -479,6 +504,15 @@ class OSPAMetric(GOSPAMetric):
             Metric.value contains a list of metrics for the OSPA distance at
             each timestamp
         """
+        '''
+        ############################ Amir Debugging-related lines of code ##########################################
+        TimeStampDebug = []
+        meas_pointsDebug = []
+        truth_pointsDebug = []
+        errorDebug = []
+        CovDebug = []
+        ############################ End  Debugging-related lines of code ##########################################
+        '''
 
         # Make a sorted list of all the unique timestamps used
         timestamps = sorted({
@@ -486,7 +520,7 @@ class OSPAMetric(GOSPAMetric):
             for state in chain(measured_states, truth_states)})
 
         ospa_distances = []
-
+        debug_info_list = []
         for timestamp in timestamps:
             meas_points = [state
                            for state in measured_states
@@ -496,7 +530,25 @@ class OSPAMetric(GOSPAMetric):
                             if state.timestamp == timestamp]
             ospa_distances.append(
                 self.compute_OSPA_distance(meas_points, truth_points))
+            metric = self.compute_OSPA_distance(meas_points, truth_points)
 
+            # Collect debugging information
+            debug_info = collect_debugging_info(timestamp, meas_points, truth_points, metric, 'OSPA')
+            debug_info_list.append(debug_info)
+
+            '''
+            ############################ Amir Debugging-related lines of code ##########################################
+            TimeStampDebug.append(timestamp)
+            meas_pointsDebug.append(meas_points)
+            truth_pointsDebug.append(truth_points)
+            # Extract state vectors
+            truth_vectors = [Tstate.state_vector for Tstate in truth_points]
+            meas_vectors = [Mstate.state_vector for Mstate in meas_points]
+            combined_vectors = [t_vector - m_vector for t_vector, m_vector in zip(truth_vectors, meas_vectors)] # Subtract using zip
+            errorDebug.append(combined_vectors)
+            CovDebug.append([Cstate.covar for Cstate in meas_points])
+            ############################ End  Debugging-related lines of code ##########################################
+            '''
         # If only one timestamp is present then return a SingleTimeMetric
         if len(timestamps) == 1:
             return ospa_distances[0]
@@ -504,6 +556,7 @@ class OSPAMetric(GOSPAMetric):
             return TimeRangeMetric(
                 title='OSPA distances',
                 value=ospa_distances,
+                metadata=debug_info_list,
                 time_range=TimeRange(min(timestamps), max(timestamps)),
                 generator=self)
 
@@ -568,3 +621,568 @@ class OSPAMetric(GOSPAMetric):
 
         return SingleTimeMetric(title='OSPA distance', value=distance,
                                 timestamp=timestamps.pop(), generator=self)
+
+################################# NEESMetric implemented by Amir #######################################################
+class NEESMetric(GOSPAMetric):
+    """
+    Computes the Normalized Estimation Error Squared (NEES) metric for state estimators.
+    The NEES metric is used to assess the consistency of state estimators.
+
+    The NEES metric is defined as:
+
+    \[ \text{NEES} = \frac{1}{n} \sum_{i=1}^{n} (x_i - \hat{x}_i)^T P_i^{-1} (x_i - \hat{x}_i) \]
+
+    Where:
+    - \( x_i \) is the true state vector.
+    - \( \hat{x}_i \) is the estimated state vector.
+    - \( P_i \) is the estimation error covariance matrix.
+    - \( n \) is the number of states.
+    """
+
+    generator_name: str = Property(doc="Unique identifier to use when accessing generated metrics "
+                                       "from MultiManager",
+                                   default='nees_generator')
+    tracks_key: str = Property(doc='Key to access set of tracks added to MetricManager',
+                               default='tracks')
+    truths_key: str = Property(doc="Key to access set of ground truths added to MetricManager. "
+                                   "Or key to access a second set of tracks for track-to-track"
+                                   " metric generation",
+                               default='groundtruth_paths')
+
+    '''def compute_metric(self, manager):
+        """Compute the NEES metric using the data in the metric manager
+
+        Parameters
+        ----------
+        manager : :class:`~.MetricManager`
+            contains the data to be used to create the metric(s)
+
+        Returns
+        -------
+        metric : list :class:`~.Metric`
+            Containing the metric information. The value of the metric is a
+            list of metrics at each timestamp
+
+        """
+        return self.compute_over_time(
+            *self.extract_states(manager.states_sets[self.tracks_key], True),
+            *self.extract_states(manager.states_sets[self.truths_key], True)
+        )'''
+
+    def compute_over_time(self, measured_states, measured_state_ids, truth_states, truth_state_ids):
+        """
+        Compute the NEES metric at every timestep from a list of measured
+        states and truth states.
+
+        Parameters
+        ----------
+        measured_states: List of states created by a filter
+        measured_state_ids: ids for which state belongs in
+        truth_states: List of truth states to compare against
+        truth_state_ids: ids for which truth state belongs in
+
+        Returns
+        -------
+        metric: :class:`~.TimeRangeMetric` covering the duration that states
+        exist for in the parameters. metric.value contains a list of metrics
+        for the NEES metric at each timestamp
+        """
+        ''''
+        ############################ Amir Debugging-related lines of code ##########################################
+        TimeStampDebug=[]
+        meas_pointsDebug=[]
+        truth_pointsDebug=[]
+        errorDebug=[]
+        CovDebug = []
+        ############################ Amir Debugging-related lines of code ##########################################
+        '''
+
+        debug_info_list = []
+
+        # Make a list of all the unique timestamps used
+        timestamps = sorted({
+            state.timestamp
+            for state in chain(measured_states, truth_states)})
+
+        nees_metrics = []
+
+        for timestamp in timestamps:
+            meas_mask = [state.timestamp == timestamp for state in measured_states]
+            meas_points = np.array(measured_states)[meas_mask]
+            meas_ids = np.array(measured_state_ids)[meas_mask]
+
+            truth_mask = [state.timestamp == timestamp for state in truth_states]
+            truth_points = np.array(truth_states)[truth_mask]
+            truth_ids = np.array(truth_state_ids)[truth_mask]
+
+            metric = self.compute_nees_metric(meas_points, truth_points)
+            nees_metrics.append(metric)
+
+            # Collect debugging information
+            debug_info = collect_debugging_info(timestamp, meas_points, truth_points, metric, 'NEES')
+            debug_info_list.append(debug_info)
+            '''
+            ############################ Amir Debugging-related lines of code ##########################################
+            TimeStampDebug.append(timestamp)
+            meas_pointsDebug.append(meas_points)
+            truth_pointsDebug.append(truth_points)
+
+            # Extract state vectors
+            truth_vectors = [Tstate.state_vector for Tstate in truth_points]
+            meas_vectors = [Mstate.state_vector for Mstate in meas_points]
+            combined_vectors = [t_vector - m_vector for t_vector, m_vector in zip(truth_vectors, meas_vectors)] # Subtract using zip
+            errorDebug.append(combined_vectors)
+            CovDebug.append([Cstate.covar for Cstate in meas_points])
+            ########################## End of Debugging-related lines of code ##########################################
+            '''
+
+
+        # If only one timestamp is present then return a SingleTimeMetric
+        if len(timestamps) == 1:
+            return nees_metrics[0]
+        else:
+            '''
+            return TimeRangeMetric(
+            title='NEES Metrics',
+            value=nees_metrics,
+            time_range=TimeRange(min(timestamps), max(timestamps)),
+            metadata=metric.metadata,
+            generator=self)
+            '''
+            '''
+            return TimeRangeMetric(
+                title='NEES Metrics',
+                value=nees_metrics,
+                time_range=TimeRange(min(timestamps), max(timestamps)),
+                metadata={
+                    'time': TimeStampDebug,
+                    'meas': meas_pointsDebug,
+                    'truth': truth_pointsDebug,
+                    'Covar': CovDebug,
+                    'error': errorDebug,
+                    'Score': nees_metrics
+                },
+                generator=self)
+            '''
+            return TimeRangeMetric(
+                title='NEES Metrics',
+                value=nees_metrics,
+                time_range=TimeRange(min(timestamps), max(timestamps)),
+                metadata=debug_info_list,
+                generator=self)
+
+
+
+    def compute_nees_metric(self, measured_states, truth_states):
+        """Computes NEES metric between measured and truth states.
+
+        Parameters
+        ----------
+        measured_states: list of :class:`~.State`
+            list of state objects to be assigned to the truth
+        truth_states: list of :class:`~.State`
+            list of state objects for the truth points
+
+        Returns
+        -------
+        nees_metric: SingleTimeMetric
+            containing the NEES metric value
+        """
+        timestamps = {
+            state.timestamp
+            for state in chain(truth_states, measured_states)}
+        if len(timestamps) != 1:
+            raise ValueError(
+                'All states must be from the same time to compute NEES')
+
+        nees_value = 0.0
+        n = len(truth_states)
+
+        error_vector = []
+        P_inv_vector = []
+        truth_state_vector = []
+        meas_state_vector = []
+        single_nees_value_vector = []
+
+        for truth_state, meas_state in zip(truth_states, measured_states):
+            error = truth_state.state_vector - meas_state.state_vector
+            error_vector.append(error)
+            P_inv = np.linalg.pinv(meas_state.covar)
+            P_inv_vector.append(P_inv)
+            truth_state_vector.append(truth_state)
+            meas_state_vector.append(meas_state)
+            single_nees_value_vector.append( error.T @ P_inv @ error)
+            ############################ Amir Debugging-related lines of code ##########################################
+            # Print debugging information
+            '''
+            print('================================')
+            print('Timestamp: ' + str(timestamps)[31:41])
+            print('GT State Vector: ' + str(np.array(truth_state.state_vector).flatten()))
+            print('Est State Vector: ' + str(np.array(meas_state.state_vector).flatten()))
+            print('Error Vector: ' + str(error.flatten()))
+            if np.sum(error.flatten()) > 0:
+                print('Error is greater than 0')
+                keyboard.wait('Ctrl')
+            print('GT Covariance Matrix:\n' + str(np.array(truth_state.covar)))
+            print('Est Covariance Matrix:\n' + str(np.array(meas_state.covar)))
+            print('Delta Covariance Matrix:\n' + str(np.array(meas_state.covar)-np.array(truth_state.covar)))
+            print('Inverse Est Covariance Matrix:\n' + str(P_inv))
+            single_nees_value = error.T @ P_inv @ error
+            print('NEES Contribution: ' + str(single_nees_value))
+            print('====== End TimeStamp ===========')
+            print('================================')
+            '''
+            ########################## End of Debugging-related lines of code ##########################################
+
+            nees_value += error.T @ P_inv @ error
+
+        # nees_value /= n
+        nees_value = nees_value.item() / n  # Ensure it's scalar
+
+
+
+        single_time_nees_metric = SingleTimeMetric(
+            title='NEES Metric', value=nees_value,
+            timestamp=timestamps.pop(), generator=self,
+            metadata = {
+                            'meas': meas_state_vector,
+                            'truth': truth_state_vector,
+                            'error': error_vector,
+                            'single_nees_value': single_nees_value_vector,
+                            'overall_nees': nees_value
+                        }
+        )
+        return single_time_nees_metric
+
+############################# End of NEESMetric implemented by Amir ####################################################
+
+################################# RMSEMetric implemented by Amir #######################################################
+
+class RMSEMetric(GOSPAMetric):
+    """
+    Computes the Root Mean Squared Error (RMSE) metric for state estimators.
+    The RMSE metric is used to measure the accuracy of state estimators.
+
+    The RMSE metric is defined as:
+
+    \[ \text{RMSE} = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (x_i - \hat{x}_i)^2} \]
+
+    Where:
+    - \( x_i \) is the true state vector.
+    - \( \hat{x}_i \) is the estimated state vector.
+    - \( n \) is the number of states.
+    """
+
+    generator_name: str = Property(doc="Unique identifier to use when accessing generated metrics "
+                                       "from MultiManager",
+                                   default='rmse_generator')
+    tracks_key: str = Property(doc='Key to access set of tracks added to MetricManager',
+                               default='tracks')
+    truths_key: str = Property(doc="Key to access set of ground truths added to MetricManager. "
+                                   "Or key to access a second set of tracks for track-to-track"
+                                   " metric generation",
+                               default='groundtruth_paths')
+
+    def compute_metric(self, manager):
+        """Compute the RMSE metric using the data in the metric manager
+
+        Parameters
+        ----------
+        manager : :class:`~.MetricManager`
+            contains the data to be used to create the metric(s)
+
+        Returns
+        -------
+        metric : list :class:`~.Metric`
+            Containing the metric information. The value of the metric is a
+            list of metrics at each timestamp
+
+        """
+        return self.compute_over_time(
+            *self.extract_states(manager.states_sets[self.tracks_key], True),
+            *self.extract_states(manager.states_sets[self.truths_key], True)
+        )
+
+    def compute_over_time(self, measured_states, measured_state_ids, truth_states, truth_state_ids):
+        """
+        Compute the RMSE metric at every timestep from a list of measured
+        states and truth states.
+
+        Parameters
+        ----------
+        measured_states: List of states created by a filter
+        measured_state_ids: ids for which state belongs in
+        truth_states: List of truth states to compare against
+        truth_state_ids: ids for which truth state belongs in
+
+        Returns
+        -------
+        metric: :class:`~.TimeRangeMetric` covering the duration that states
+        exist for in the parameters. metric.value contains a list of metrics
+        for the RMSE metric at each timestamp
+        """
+
+        print('rmse comute over time')
+        print(measured_state_ids, truth_state_ids)
+        print(len(measured_state_ids))
+        # Make a list of all the unique timestamps used
+        timestamps = sorted({
+            state.timestamp
+            for state in chain(measured_states, truth_states)})
+        debug_info_list = []
+
+        rmse_metrics = []
+        for timestamp in timestamps:
+            meas_mask = [state.timestamp == timestamp for state in measured_states]
+            meas_points = np.array(measured_states)[meas_mask]
+            meas_ids = np.array(measured_state_ids)[meas_mask]
+
+            truth_mask = [state.timestamp == timestamp for state in truth_states]
+            truth_points = np.array(truth_states)[truth_mask]
+            truth_ids = np.array(truth_state_ids)[truth_mask]
+
+            metric = self.compute_rmse_metric(meas_points[meas_ids], truth_points[[1, 0]])
+            rmse_metrics.append(metric)
+
+            # Collect debugging information
+            debug_info = collect_debugging_info(timestamp, meas_points, truth_points, metric, 'RMSE')
+            debug_info_list.append(debug_info)
+
+        # If only one timestamp is present then return a SingleTimeMetric
+        if len(timestamps) == 1:
+            return rmse_metrics[0]
+        else:
+            return TimeRangeMetric(
+                title='RMSE Metrics',
+                value=rmse_metrics,
+                time_range=TimeRange(min(timestamps), max(timestamps)),
+                metadata=debug_info_list,
+                generator=self)
+
+    def compute_rmse_metric(self, measured_states, truth_states):
+        """Computes RMSE metric between measured and truth states.
+
+        Parameters
+        ----------
+        measured_states: list of :class:`~.State`
+            list of state objects to be assigned to the truth
+        truth_states: list of :class:`~.State`
+            list of state objects for the truth points
+
+        Returns
+        -------
+        rmse_metric: SingleTimeMetric
+            containing the RMSE metric value
+        """
+        timestamps = {
+            state.timestamp
+            for state in chain(truth_states, measured_states)}
+        if len(timestamps) != 1:
+            raise ValueError(
+                'All states must be from the same time to compute RMSE')
+
+        rmse_value = 0.0
+        n = len(truth_states)  ## this is also wrong
+        print(n, 'num states')
+        # print(truth_states[0].state_vector, measured_states[0].state_vector)
+        # print(truth_states[0].state_vector - measured_states[0].state_vector)
+        # print(np.sum((truth_states[0].state_vector - measured_states[0].state_vector)**2))
+
+         # sys.exit()
+        counter = 0
+        for truth_state, meas_state in zip(truth_states, measured_states):
+            error = truth_state.state_vector - meas_state.state_vector
+            rmse_value += np.sum(error**2)
+            print(counter)
+            counter +=1
+
+        # Compute RMSE
+        rmse_value = np.sqrt(rmse_value / n)
+        print(rmse_value)
+        sys.exit()
+        single_time_rmse_metric = SingleTimeMetric(
+            title='RMSE Metric', value=rmse_value,
+            timestamp=timestamps.pop(), generator=self)
+
+        return single_time_rmse_metric
+################################## End of RMSEMetric implemented by Amir #############################################
+
+################################# KLMetric implemented by Amir #######################################################
+class KLMetric(OSPAMetric):
+    """
+    Computes the Kullback-Leibler (KL) divergence metric between estimated states and ground truth states.
+
+    The KL divergence is a measure of how one probability distribution diverges from a second, expected probability distribution.
+    """
+    generator_name: str = Property(doc="Unique identifier to use when accessing generated metrics "
+                                       "from MultiManager",
+                                   default='kl_generator')
+    tracks_key: str = Property(doc='Key to access set of tracks added to MetricManager',
+                               default='tracks')
+    truths_key: str = Property(doc="Key to access set of ground truths added to MetricManager. "
+                                   "Or key to access a second set of tracks for track-to-track"
+                                   " metric generation",
+                               default='groundtruth_paths')
+
+    def compute_metric(self, manager):
+        """Compute the KL divergence metric using the data in the metric manager
+
+        Parameters
+        ----------
+        manager : :class:`~.MetricManager`
+            contains the data to be used to create the metric(s)
+
+        Returns
+        -------
+        metric : list :class:`~.Metric`
+            Containing the metric information. The value of the metric is a
+            list of metrics at each timestamp
+
+        """
+        return self.compute_over_time(
+            *self.extract_states(manager.states_sets[self.tracks_key], True),
+            *self.extract_states(manager.states_sets[self.truths_key], True)
+        )
+
+    def compute_over_time(self, measured_states, measured_state_ids, truth_states, truth_state_ids):
+        """
+        Compute the KL divergence metric at every timestep from a list of measured
+        states and truth states.
+
+        Parameters
+        ----------
+        measured_states: List of states created by a filter
+        measured_state_ids: ids for which state belongs in
+        truth_states: List of truth states to compare against
+        truth_state_ids: ids for which truth state belongs in
+
+        Returns
+        -------
+        metric: :class:`~.TimeRangeMetric` covering the duration that states
+        exist for in the parameters. metric.value contains a list of metrics
+        for the KL divergence metric at each timestamp
+        """
+
+        # Make a list of all the unique timestamps used
+        timestamps = sorted({
+            state.timestamp
+            for state in chain(measured_states, truth_states)})
+
+        kl_metrics = []
+        kl_divergence = KLDivergence()
+        debug_info_list = []
+        for timestamp in timestamps:
+            meas_mask = [state.timestamp == timestamp for state in measured_states]
+            meas_points = np.array(measured_states)[meas_mask]
+            meas_ids = np.array(measured_state_ids)[meas_mask]
+
+            truth_mask = [state.timestamp == timestamp for state in truth_states]
+            truth_points = np.array(truth_states)[truth_mask]
+            truth_ids = np.array(truth_state_ids)[truth_mask]
+
+            metric = self.compute_kl_metric(meas_points, truth_points, kl_divergence)
+            kl_metrics.append(metric)
+
+            # Collect debugging information
+            debug_info = collect_debugging_info(timestamp, meas_points, truth_points, metric, 'KL')
+            debug_info_list.append(debug_info)
+
+        # If only one timestamp is present then return a SingleTimeMetric
+        if len(timestamps) == 1:
+            return kl_metrics[0]
+        else:
+            return TimeRangeMetric(
+                title='KL Metrics',
+                value=kl_metrics,
+                time_range=TimeRange(min(timestamps), max(timestamps)),
+                metadata=debug_info_list,
+                generator=self)
+
+    def compute_kl_metric(self, measured_states, truth_states, kl_divergence):
+        """Computes KL divergence metric between measured and truth states.
+
+        Parameters
+        ----------
+        measured_states: list of :class:`~.State`
+            list of state objects to be assigned to the truth
+        truth_states: list of :class:`~.State`
+            list of state objects for the truth points
+        kl_divergence: :class:`~.KLDivergence`
+            KL divergence measure instance
+
+        Returns
+        -------
+        kl_metric: SingleTimeMetric
+            containing the KL divergence metric value
+        """
+        timestamps = {
+            state.timestamp
+            for state in chain(truth_states, measured_states)}
+        if len(timestamps) != 1:
+            raise ValueError(
+                'All states must be from the same time to compute KL divergence')
+
+        kl_value = 0.0
+        n = len(truth_states)
+
+        for truth_state, meas_state in zip(truth_states, measured_states):
+            if isinstance(truth_state, (ParticleState, GaussianState)) and isinstance(meas_state, (ParticleState, GaussianState)):
+                ############################ Amir Debugging-related lines of code ###################################
+                '''
+                single_kl_value = kl_divergence(truth_state, meas_state)
+                #print(f'Timestamp: {timestamps}, Truth State: {truth_state.state_vector}, Measured State: {meas_state.state_vector}, KL Divergence: {single_kl_value}')
+                # print(f'Timestamp: {timestamps}, Truth State: {truth_state.state_vector}, Measured State: {meas_state.state_vector}, KL Divergence: {single_kl_value}')
+                print('Timestamp: ' + str(timestamps)[32:41])
+                print('GT State Vector: ' + str(np.array(truth_state.state_vector).flatten()))
+                print('Est State Vector: ' + str(np.array(meas_state.state_vector).flatten()))
+                print('GT Covariance Matrix:\n' + str(np.array(truth_state.covar)))
+                print('Est Covariance Matrix:\n' + str(np.array(meas_state.covar)))
+                print('KL Divergence: ' + str(single_kl_value))
+                '''
+                ############################ End ofDebugging-related lines of code #####################################
+                kl_value += kl_divergence(truth_state, meas_state)
+            else:
+                raise TypeError("States must be either ParticleState or GaussianState")
+
+        # Average KL value over all samples
+        kl_value /= n
+
+        single_time_kl_metric = SingleTimeMetric(
+            title='KL Divergence Metric', value=kl_value,
+            timestamp=timestamps.pop(), generator=self)
+
+        return single_time_kl_metric
+
+def collect_debugging_info(timestamp, meas_points, truth_points, metric_value, name_metric):
+    """
+    Collects debugging information for a given timestamp.
+
+    Parameters
+    ----------
+    Name of the Metric : The Metric name
+    timestamp : The current timestamp being processed.
+    meas_points : List of measured states at the current timestamp.
+    truth_points : List of truth states at the current timestamp.
+    metric_value : Value related to the computation of the name_metric metric.
+    name_metric : name of the metric being evaluated
+    Returns
+    -------
+    dict : A dictionary containing debugging information.
+    """
+    # Extract state vectors
+    truth_vectors = [Tstate.state_vector for Tstate in truth_points]
+    meas_vectors = [Mstate.state_vector for Mstate in meas_points]
+    error_vectors = [t_vector - m_vector for t_vector, m_vector in
+                     zip(truth_vectors, meas_vectors)]
+    covariance_matrices = [Cstate.covar for Cstate in meas_points]
+    # metric_value = compute_any_metric(meas_points, truth_points)
+
+    return {
+        'Name': name_metric,
+        'timestamp': timestamp,
+        'meas': meas_vectors,
+        'truth': truth_vectors,
+        'error': error_vectors,
+        'covariance': covariance_matrices,
+        'overall_'+ name_metric: metric_value
+    }

@@ -13,7 +13,6 @@ class Metric(Type):
     title: str = Property(doc='Name of the metric')
     value: typing.Any = Property(doc='Value of the metric')
     generator: typing.Any = Property(doc='Generator used to create the metric')
-    metadata: dict = Property(default=dict(), doc='Metadata')   # Amir: Added to make GOSPA work
 
 
 class PlottingMetric(Metric):
