@@ -2,7 +2,7 @@ from typing import Union
 
 import numpy as np
 from enum import Enum
-from scipy.stats import multivariate_normal
+from scipy.stats import multivariate_normal as mvn
 
 from stonesoup.base import Property
 from stonesoup.models.measurement import MeasurementModel
@@ -12,7 +12,7 @@ from stonesoup.types.array import StateVector, StateVectors
 from stonesoup.types.detection import Detection
 from stonesoup.types.numeric import Probability
 from stonesoup.types.state import State, GaussianState, SqrtGaussianState, ParticleState
-from stonesoup.types.prediction import Prediction
+from stonesoup.types.prediction import Prediction, ParticleStatePrediction
 from stonesoup.updater.base import Updater
 from stonesoup.predictor.base import Predictor
 from stonesoup.predictor.kalman import SqrtKalmanPredictor
@@ -23,20 +23,24 @@ from stonesoup.types.particle import Particle
 
 class PriorAsProposal(Proposal):
     """Proposal that uses the dynamics model as the importance density.
-    This proposal uses the dynamics model to predict the next state, and then
-    uses the predicted state as the prior for the measurement model.
+    This proposal uses the dynamics model to predict the next state.
     """
     transition_model: TransitionModel = Property(
         doc="The transition model used to make the prediction")
-    measurement_model: MeasurementModel = Property(
-        doc="The measurement model used to evaluate the likelihood")
 
-    def rvs(self, state: State, **kwargs) -> Union[StateVector, StateVectors]:
+    def rvs(self, prior: State, measurement=None, time_interval=None, **kwargs):
         """Generate samples from the proposal.
         Parameters
         ----------
         state: :class:`~.State`
             The state to generate samples from.
+        measurement: :class:`~.Detection`, optional
+            The measurement used to calculate the time interval. If not provided, the time interval
+            will be used to propagate the state.
+        time_interval: :class:`datetime.timedelta`, optional
+            The time interval between the prior and the proposed state. Only used if no detection
+            is provided.
+
         Returns
         -------
         : 2-D array of shape (:attr:`ndim`, ``num_samples``)
@@ -45,83 +49,27 @@ class PriorAsProposal(Proposal):
 
         """
 
-        new_state = self.transition_model.function(state, **kwargs)
-        # temp_state = ParticleState(state_vector=new_state)
-        # print(kwargs['detection'])
-        # prior_logpdf = self.prior_logpdf(temp_state, state, **kwargs)
-        # loglikelihood = self.measurement_model.logpdf(kwargs['detection'], temp_state, **kwargs)
-        # prop_logpdf = self.logpdf(temp_state, state, **kwargs)
-        # new_weights = state.log_weights + prior_logpdf + loglikelihood - prop_logpdf
-        return new_state # , new_weights
+        if measurement is not None:
+            timestamp = measurement.timestamp
+            time_interval = measurement.timestamp - prior.timestamp
+        else:
+            timestamp = prior.timestamp + time_interval
 
-
-    def pdf(self, new_state: State, old_state: State, measurement: Detection = None,
-            **kwargs) -> Union[Probability, np.ndarray]:
-        """Evaluate the probability density function of a state given the proposal.
-        Parameters
-        ----------
-        state1: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        state2: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        Returns
-        -------
-        : float
-            The probability density function of the state given the proposal.
-        """
-        return self.prior_pdf(new_state, old_state, **kwargs)
-
-    def prior_pdf(self, new_state: State, old_state: State, measurement: Detection = None, **kwargs) \
-            -> Union[Probability, np.ndarray]:
-        """Evaluate the probability density function of a state given the proposal.
-        Parameters
-        ----------
-        state1: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        state2: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        Returns
-        -------
-        : float
-            The probability density function of the state given the proposal.
-        """
-        return self.transition_model.pdf(new_state, old_state, **kwargs)
-
-    def prior_logpdf(self, new_state: State, old_state: State, measurement: Detection = None, **kwargs) \
-            -> Union[float, np.ndarray]:
-        """Evaluate the log likelihood of a state given the proposal.
-        Parameters
-        ----------
-        state: :class:`~.StateVector`
-            The state to evaluate the log likelihood of a state given the proposal.
-        Returns
-        -------
-        : float
-            The log likelihood of the state given the proposal.
-        """
-        return self.transition_model.logpdf(new_state, old_state, **kwargs)
-
-    def logpdf(self, state1: State, state2: State, measurement: Detection = None, **kwargs) \
-            -> Union[float, np.ndarray]:
-        """Evaluate the log probability density function of a state given the proposal.
-        Parameters
-        ----------
-        state1: :class:`~.State`
-            The state to evaluate the log probability density function of a state given the proposal.
-        state2: :class:`~.State`
-            The state to evaluate the log probability density function of a state given the proposal.
-        Returns
-        -------
-        : float
-            The log probability density function of the state given the proposal.
-        """
-        return self.prior_logpdf(state1, state2, measurement, **kwargs)
+        new_state_vector = self.transition_model.function(prior,
+                                                          time_interval=time_interval,
+                                                          **kwargs)
+        return Prediction.from_state(prior,
+                                     parent=prior,
+                                     state_vector=new_state_vector,
+                                     timestamp=timestamp,
+                                     transition_model=self.transition_model,
+                                     prior=prior)
 
 
 class KalmanFilterProposalScheme(Enum):
     """Kalman Filter proposal scheme enumeration"""
-    GLOBAL = 'global'    #: Global KF scheme
-    LOCAL = 'local'      #: Local KF scheme
+    GLOBAL = 'global'  #: Global KF scheme
+    LOCAL = 'local'  #: Local KF scheme
 
 
 class KFasProposal(Proposal):
@@ -134,28 +82,27 @@ class KFasProposal(Proposal):
         doc="Updater used for update the values")
     scheme: KalmanFilterProposalScheme = Property(
         default=KalmanFilterProposalScheme.GLOBAL,
-        doc="The scheme for performing the Kalman Filter passage from a "
-            "particle distribution. The difference between the two schemes comes from"
-            "the approximation chosen: the ``'global'`` scheme approximates the "
-            "particles distribution with a Gaussian with the same mean and same "
-            "covariance, with this state we apply the Kalman filtering and then"
-            "we sample from the posterior distribution; ``'local'`` scheme instead "
-            "treats each particle as a Gaussian state with zero covariance and propagate them"
-            "using the Kalman iteration, at the end we sample from each posterior distribution "
-            "and we compile the resulting final particle state. It is significantly slower than"
-            "the global appoximation")
+        doc="The scheme for performing the Kalman Filter passage from a particle distribution. "
+            "The difference between the two schemes comes from the approximation chosen: the "
+            "``'global'`` scheme approximates the particles distribution with a Gaussian with the "
+            "same mean and same covariance, with this state we apply the Kalman filtering and then"
+            "we sample from the posterior distribution; ``'local'`` scheme instead treats each "
+            "particle as a Gaussian state with zero covariance and propagate them using the "
+            "Kalman iteration, at the end we sample from each posterior distribution and we "
+            "compile the resulting final particle state. It is significantly slower than the "
+            "global appoximation")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Ensure kalman proposal scheme is a valid KalmanFilterProposalScheme
         self.scheme = KalmanFilterProposalScheme(self.scheme)
 
-    def rvs(self, state: State, **kwargs) -> Union[StateVector, StateVectors]:
+    def rvs(self, prior: State, measurement: Detection, time_interval=None, **kwargs):
         """Generate samples from the proposal.
             Use the kalman filter predictor
         Parameters
         ----------
-        state: :class:`~.State`
+        prior: :class:`~.State`
             The state to generate samples from.
         Returns
         -------
@@ -165,167 +112,109 @@ class KFasProposal(Proposal):
         """
 
         # get the number of particles
-        number_particles = state.state_vector.shape[1]
-        old_weight = state.log_weight
+        num_particles = prior.state_vector.shape[1]
 
-        if not isinstance(kwargs['detection'], type(None)):
-            temp_timestamp = kwargs['detection'].timestamp
+        # Get the time interval and timestamp
+        if measurement is not None:
+            timestamp = measurement.timestamp
+            time_interval = measurement.timestamp - prior.timestamp
         else:
-            temp_timestamp = state.timestamp
+            timestamp = prior.timestamp + time_interval
+
+        if time_interval.total_seconds() == 0:
+            return Prediction.from_state(prior,
+                                         parent=prior,
+                                         state_vector=prior.state_vector,
+                                         timestamp=timestamp,
+                                         transition_model=self.predictor.transition_model,
+                                         prior=prior)
+
+        # Define the KF prior class
+        prior_cls = GaussianState  # Default
+        if isinstance(self.predictor, SqrtKalmanPredictor):
+            prior_cls = SqrtGaussianState
 
         # Check the kalman filter proposal
         if self.scheme == KalmanFilterProposalScheme.GLOBAL:
+            # Construct the Kalman filter prior
+            kalman_prior = prior_cls(prior.mean, prior.covar, prior.timestamp)
 
-            if isinstance(self.predictor, SqrtKalmanPredictor):
-                kalman_prediction = self.predictor.predict(
-                    SqrtGaussianState(state.mean, state.covar, state.timestamp),
-                    timestamp=temp_timestamp, noise=kwargs['noise'])
-            else:
-                kalman_prediction = self.predictor.predict(
-                    GaussianState(state.mean, state.covar, state.timestamp),
-                    timestamp=temp_timestamp, noise=kwargs['noise'])
+            # Perform the Kalman filter prediction
+            kalman_prediction = self.predictor.predict(kalman_prior, timestamp=timestamp)
 
-            if not isinstance(kwargs['detection'], type(None)):
-                # in case we don't have the detection
-                posterior_state = self.updater.update(SingleHypothesis(kalman_prediction, kwargs['detection']))
+            if measurement is not None:
+                posterior_state = self.updater.update(
+                    SingleHypothesis(kalman_prediction, measurement))
             else:
+                # in case we don't have the measurement
                 posterior_state = kalman_prediction  # keep the prediction
 
             # need to sample from the posterior now
-            samples = multivariate_normal.rvs(
-                np.array(posterior_state.state_vector).reshape(-1),
-                posterior_state.covar,
-                size=number_particles)
+            samples = mvn.rvs(posterior_state.state_vector.reshape(-1),
+                              posterior_state.covar,
+                              size=num_particles)
 
-            particles = [Particle(sample.reshape(-1, 1),
-                                  weight=1/len(samples)) for sample in samples]
-
-            pred_state = ParticleState(state_vector=None,
-                                       particle_list=particles,
-                                       timestamp=temp_timestamp)
+            # Compute the log of q(x_k|x_{k-1}, y_k)
+            post_log_weights = mvn.logpdf(samples, np.array(posterior_state.mean).reshape(-1),
+                                          posterior_state.covar)
 
         else:
             # Null covariance
-            null_covar = np.zeros([state.state_vector.shape[0], state.state_vector.shape[0]])
-            #covar = np.ones([state.state_vector.shape[0], state.state_vector.shape[0]])
+            null_covar = np.zeros_like(prior.covar)
 
-            covar = state.covar
-            predictions, updates = [], []
+            predictions = [
+                self.predictor.predict(
+                    prior_cls(particle_sv, null_covar, prior.timestamp),
+                    timestamp=timestamp,
+                    noise=kwargs['noise'])
+                for particle_sv in prior.state_vector
+            ]
 
-            if isinstance(self.predictor, SqrtKalmanPredictor):
-                # loop over the particles
-                for iparticle in range(number_particles):
-                    predictions.append(self.predictor.predict(
-                        SqrtGaussianState(state.state_vector[:, iparticle],
-                                          null_covar,
-                                          state.timestamp),
-                        timestamp=temp_timestamp,
-                        noise=kwargs['noise']))
+            if measurement is not None:
+                updates = [self.updater.update(SingleHypothesis(prediction, measurement))
+                           for prediction in predictions]
             else:
-                for iparticle in range(number_particles):
-                    predictions.append(self.predictor.predict(
-                        GaussianState(state.state_vector[:, iparticle],
-                                      null_covar,
-                                      state.timestamp),
-                    timestamp=temp_timestamp,
-                    noise=kwargs['noise']))
-
-            if not isinstance(kwargs['detection'], type(None)):
-                # in case we don't have the detection
-                for prediction in predictions:
-                    updates.append(self.updater.update(
-                        SingleHypothesis(prediction, kwargs['detection'])))
-            else:
+                # in case we don't have the measurement
                 updates = predictions  # keep the prediction
 
             # Draw the samples
-            particles = [Particle(multivariate_normal.rvs(
-                np.array(sample.state_vector).reshape(-1),
-                cov=covar, size=1),
-                weight=1/len(updates)) for sample in updates]
+            samples = np.array([state.state_vector.reshape(-1) + mvn.rvs(cov=state.covar).T
+                                for state in updates])
 
-            pred_state = ParticleState(state_vector=None,
-                                       particle_list=particles,
-                                       timestamp=temp_timestamp)
+            # Compute the log of q(x_k|x_{k-1}, y_k)
+            post_log_weights = np.array([mvn.logpdf(sample,
+                                                    np.array(update.mean).reshape(-1),
+                                                    update.covar)
+                                         for sample, update in zip(samples, updates)])
 
-        # p(y_k|x_k)
-        # loglikelihood = measurement_model.logpdf(kwargs['detection'], pred_state,
-        #                                          **kwargs)
-        #
-        # # p(x_k|x_k-1)
-        # prior_logpdf = self.prior_logpdf(pred_state,
-        #                                  state,  # acting as prior
-        #                                  kwargs['detection'],
-        #                                  **kwargs)
-        #
-        # # q(x_k|x_k-1, y_k)
-        # prop_logpdf = self.logpdf(predicted_state,
-        #                           state,
-        #                           kwargs['detection'],
-        #                           **kwargs)
-        #
-        # new_weights = old_weight +  prior_logpdf + loglikelihood - prop_logpdf
-        return pred_state.state_vector
+        # Construct the prediction state
+        pred_state = Prediction.from_state(prior,
+                                           parent=prior,
+                                           state_vector=StateVectors(samples.T),
+                                           timestamp=timestamp,
+                                           transition_model=self.predictor.transition_model,
+                                           prior=prior)
 
-    def prior_pdf(self, new_state: State, old_state: State, measurement: Detection = None, **kwargs) \
-            -> Union[Probability, np.ndarray]:
-        """Evaluate the probability density function of a state given the proposal.
-        Parameters
-        ----------
-        state1: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        state2: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        Returns
-        -------
-        : float
-            The probability density function of the state given the proposal.
-        """
-        return self.predictor.transition_model.pdf(new_state, old_state, **kwargs)
+        # Compute the log of p(x_k|x_{k-1})
+        prior_log_weights = self.predictor.transition_model.logpdf(pred_state, prior,
+                                                               time_interval=time_interval)
 
-    def pdf(self, new_state: State, old_state: State, measurement: Detection = None,
-            **kwargs) -> Union[Probability, np.ndarray]:
-        """Evaluate the probability density function of a state given the proposal.
-        Parameters
-        ----------
-        state1: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        state2: :class:`~.State`
-            The state to evaluate the probability density function of a state given the proposal.
-        Returns
-        -------
-        : float
-            The probability density function of the state given the proposal.
-        """
+        # NOTE: The above may need to be different for 'global' and 'local' schemes. Currently,
+        # it breaks the 'global' scheme. Spoke briefly to Paul H. about this, but he's on leave so
+        # will chat again on Monday. To "fix" (may not be statistically correct), replace as
+        # follows:
+        # try:
+        #     if self.scheme == KalmanFilterProposalScheme.GLOBAL:
+        #         prior_log_weights = mvn.logpdf(pred_state.state_vector.T,
+        #                                        np.array(kalman_prediction.mean).reshape(-1),
+        #                                        kalman_prediction.covar)
+        #     else:
+        #         prior_log_weights = self.predictor.transition_model.logpdf(pred_state, prior,
+        #                                                                    time_interval=time_interval)
+        # except:
+        #     a = 2
 
-        return self.prior_pdf(new_state, old_state, measurement,  **kwargs)
+        # Compute the log weights w_{k|k-1} = w_{k-1} * p(x_k|x_{k-1}) / q(x_k|x_{k-1}, k_k)
+        pred_state.log_weight = (prior.log_weight + prior_log_weights - post_log_weights)
 
-    def prior_logpdf(self, new_state: State, old_state: State, measurement: Detection = None, **kwargs) \
-            -> Union[float, np.ndarray]:
-        """Evaluate the log likelihood of a state given the proposal.
-        Parameters
-        ----------
-        state: :class:`~.StateVector`
-            The state to evaluate the log likelihood of a state given the proposal.
-        Returns
-        -------
-        : float
-            The log likelihood of the state given the proposal.
-        """
-        return self.predictor.transition_model.logpdf(new_state, old_state, **kwargs)
-
-    def logpdf(self, state1: State, state2: State, measurement: Detection = None, **kwargs) \
-            -> Union[float, np.ndarray]:
-        """Evaluate the log probability density function of a state given the proposal.
-        Parameters
-        ----------
-        state1: :class:`~.State`
-            The state to evaluate the log probability density function of a state given the proposal.
-        state2: :class:`~.State`
-            The state to evaluate the log probability density function of a state given the proposal.
-        Returns
-        -------
-        : float
-            The log probability density function of the state given the proposal.
-        """
-        return self.prior_logpdf(state1, state2, measurement, **kwargs)
+        return pred_state

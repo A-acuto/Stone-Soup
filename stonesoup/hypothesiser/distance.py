@@ -70,13 +70,15 @@ class DistanceHypothesiser(Hypothesiser):
 
             # Re-evaluate prediction
             prediction = self.predictor.predict(
-                track, timestamp=detection.timestamp, detection=detection, **kwargs)
+                track, timestamp=detection.timestamp, measurement=detection, **kwargs)
 
             # Compute measurement prediction and distance measure
             measurement_prediction = self.updater.predict_measurement(
                 prediction, detection.measurement_model, **kwargs)
-            distance = self.measure(measurement_prediction, detection)
-
+            try:
+                distance = self.measure(measurement_prediction, detection)
+            except:
+                a=2
             if self.include_all or distance < self.missed_distance:
                 # True detection hypothesis
                 hypotheses.append(
