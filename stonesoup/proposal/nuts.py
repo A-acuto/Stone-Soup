@@ -70,8 +70,11 @@ class NUTS(Proposal):
             np.linalg.pinv(self.transition_model.covar(time_interval=time_interval)) @ (-dx)
         ).T
 
+        # temporary fix to make the jacobian work with particle state: worth understanding if it is the better choice overall
+        temp_x = State(state_vector=state.mean,
+                       timestamp=state.timestamp)
         # Get Jacobians of measurements
-        H = self.measurement_model.jacobian(state)
+        H = self.measurement_model.jacobian(temp_x)
 
         # Get innov
         dy = detection.state_vector - self.measurement_model.function(state, **kwargs)
