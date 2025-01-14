@@ -50,6 +50,7 @@ class NUTS(Proposal):
         if np.isscalar(self.step_size):
             self.step_size = np.repeat(self.step_size, self.num_samples)
 
+
     def target_proposal(self, prior, state, detection,
                         time_interval):
         """Somewhat a target proposal that can be called for basic things"""
@@ -131,22 +132,51 @@ class NUTS(Proposal):
         # calculate the gradient of the function
         #        grad_x = self.get_grad(state, time_interval)
 
-        grad_x = self.grad_target_proposal(state, new_state_pred, measurement, time_interval)
+        if measurement is not None:
+            grad_x = self.grad_target_proposal(state, new_state_pred, measurement, time_interval)
 
-        x_new, v_new, acceptance = self.generate_nuts_samples(state, new_state_pred,
-                                                              v, grad_x, measurement,
-                                                              time_interval)
+            x_new, v_new, acceptance = self.generate_nuts_samples(state, new_state_pred,
+                                                                  v, grad_x, measurement,
+                                                                  time_interval)
 
-        # pi(x_k)  # state is like prior
-        pi_x_k = self.target_proposal(x_new, state, measurement, time_interval)
+            # pi(x_k)  # state is like prior
+            pi_x_k = self.target_proposal(x_new, state, measurement, time_interval)
 
-        # pi(x_k-1)
-        pi_x_k1 = self.target_proposal(state, state, measurement, time_interval)
+            # pi(x_k-1)
+            pi_x_k1 = self.target_proposal(state, state, measurement, time_interval)
 
-        # L-kernel
-        #L = 1
-        # q(x_k|x_k-1)
-        #q = 1
+            # we need to add the deteminat of the jacobian of the LF integrator
+            # following eq 22 in alessandros papers
+            # wt = wt-1 * (pi_x_k * qv(-v)/det(J))/(pi_x_k1 * p_x_xk1 * qv(v)/det(J))
+            # 1/-1 id the direction
+
+            # we need the jacobian
+            jk_minus = self.integrate_lf_vec(x_new, state, v, grad_x, -1, self.step_size, time_interval, measurement)
+            jk_plus = self.integrate_lf_vec(x_new, state, v_new, grad_x, 1, self.step_size, time_interval, measurement)
+
+            j_cab_m = self.get_grad(jk_minus, time_interval)
+            j_cab_p = self.get_grad(jk_plus, time_interval)
+
+            determinant_m = np.linalg.det(j_cab_m)
+            determinant_p = np.linalg.det(j_cab_p)
+
+            # qv I try with logpdf
+            q_star_minus = 0.000001 #mvn.logpdf(-v_new - v, mean=np.zeros(v.shape[1]))/determinant_m
+            #qv (-v)/det(J)
+            q_star_plus = 0.000001 # mvn.logpdf(v_new - v, mean=np.zeros(v.shape[1]))/determinant_p
+            #qv (v)/det(J)
+
+            # maybe not needed these below
+            # L-kernel
+            #L = 1
+            # q(x_k|x_k-1)
+            #q = 1
+        else:
+            x_new = new_state_pred
+            pi_x_k = 0
+            pi_x_k1 = 0
+            q_star_minus = 0
+            q_star_plus = 0
 
         final = Prediction.from_state(previous_state,
                                       parent=previous_state,
@@ -155,7 +185,8 @@ class NUTS(Proposal):
                                       transition_model=self.transition_model,
                                       prior=state)
 
-        final.log_weight += pi_x_k - pi_x_k1
+        final.log_weight += pi_x_k - pi_x_k1 + q_star_minus - q_star_plus
+
         return final
 
     # looks like it is not used
