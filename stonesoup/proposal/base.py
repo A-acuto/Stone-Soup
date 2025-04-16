@@ -16,3 +16,13 @@ class Proposal(Base):
             The state to generate samples from.
         """
         raise NotImplementedError
+
+
+class Optimiser(Base):
+
+    @abstractmethod
+    def rvs(self, *args, **kwargs):
+        r"""Optimiser for something
+        """
+
+        raise NotImplementedError
