@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.stats import multivariate_normal as mvn
 from scipy.stats import uniform
+from scipy.special import logsumexp
 from copy import deepcopy, copy
 
 from stonesoup.base import Property
@@ -157,20 +158,19 @@ class NUTSProposal(Proposal):
 
             # needed to the optimiser  / or not
             get_grad = self.target_proposal(state, new_state_pred, measurement, time_interval)
-            #self.get_grad(new_state_pred, time_interval)
-#            print(type(new_state_pred), new_state_pred.state_vector.shape, type(get_grad), get_grad.shape)
-#            print(grad_x.shape, type(grad_x))
+
             # in this case we might need to pass the optimiser
             if self.optimise:
-
-               self.optimiser._run_smc_adaptive(state, new_state_pred, grad_x, time_interval, measurement)
-
-               sys.exit()
+                print(self.step_size, self.step_size.shape, 'before')
+                a = self.optimiser._run_smc_adaptive(state, new_state_pred, grad_x, v,
+                                                     time_interval, measurement)
+                print(a, a.shape, 'after')
+                sys.exit()
             # how can we pass the
-
-            x_new, v_new, acceptance = self.generate_nuts_samples(state, new_state_pred,
-                                                                  v, grad_x, measurement,
-                                                                  time_interval)
+            else:
+                x_new, v_new, acceptance = self.generate_nuts_samples(state, new_state_pred,
+                                                                      v, grad_x, measurement,
+                                                                      time_interval)
 
             # pi(x_k)  # state is like prior
             pi_x_k = self.target_proposal(x_new, state, measurement, time_interval)
@@ -228,7 +228,13 @@ class NUTSProposal(Proposal):
                          measurement):
         """Leapfrog integration"""
 
-        h = h.reshape(self.num_samples, 1)
+        if len(h.shape) == 1:
+            h = h.reshape(self.num_samples, 1)
+        else:
+            # this is a botch solution to avoid generation
+            # of wrong dimension of the stepsize
+            h = h[0,:].reshape(self.num_samples, 1)
+
         v = v + direction * (h / 2) * grad_x
         einsum = np.einsum('bij,bj->bi', self.inv_MM, v)
         state.state_vector = (state.state_vector.T + direction * h * einsum).T
@@ -467,7 +473,6 @@ class NUTSProposal(Proposal):
             return xminus, vminus, grad_xminus, xplus, vplus, grad_xplus, xprime, \
                 vprime, numnodes, stopped, alpha, nalpha
 
-# the is in a solution but we can make it.
 
 # lets see if this work
 class NUTS_optimiser(Optimiser):
@@ -479,8 +484,8 @@ class NUTS_optimiser(Optimiser):
     t0: int = Property(doc='', default=10)
     gamma: float = Property(doc='', default=0.05)
     delta: float = Property(doc='', default=0.8)
-    min_acceptance: float = Property(doc='', default=0.4)
-    max_acceptance: float = Property(doc='', default=0.9)
+    # min_acceptance: float = Property(doc='', default=0.4)  # oddly out
+    # max_acceptance: float = Property(doc='', default=0.9)  # oddly out
     #num_dims: int = Property(doc='Number of dimension')
     #lf_integral: int = Property(doc='Leap frog integrator function, it is not an integer')
     sampler: Proposal = Property(doc='Sampler')  # this is where we are passing
@@ -491,14 +496,15 @@ class NUTS_optimiser(Optimiser):
         # self.sampler =
         # this is needed
         self.num_dims = self.sampler.num_dims
+        self.massMatrix = self.sampler.mass_matrix
 
     # to have it so it does not complain
     def rvs(self):
         print('helolo')
 
-    def _run_smc_adaptive(self, init_states, samples_block, get_grad, time_interval, measurement):  # removed state_dim
+    def _run_smc_adaptive(self, init_states, samples_block, get_grad, v, time_interval, measurement):  # removed state_dim
 
-        # samples block should be a state
+        # samples block is the new state pred
 
         # use the sampler number of dimension  [maybe]
         # state_dim = self.sampler.num_dims  # not needed  # num dims does not work.
@@ -516,14 +522,14 @@ class NUTS_optimiser(Optimiser):
         self.h = self._get_initial_step_size(init_states, samples_block, get_grad, measurement,
                                              time_interval=time_interval)  # I'd remove self rngs, sample block is a state
 
+        # nowself.h looks ok
         mu = np.log(10 * self.h)
         Hbar = np.zeros_like(self.h)
 
-        # ok what?
         tolerances = [0.5, 0.4, 0.2, 0.1]  # tolerance of standard deviation of step sizes
         window_size = [5, 3, 3, 3]  # windows to evaluate step size std
         max_iterations = 50  # maximum number of iterations total
-        sys.exit()
+
         # window size?
         max_window_size = max(window_size)
         tol_ptr = 0  # index of tolerance we are considering
@@ -531,34 +537,40 @@ class NUTS_optimiser(Optimiser):
         array_of_steps = [np.inf for _ in range(max_window_size)]
 
         while num_iterations < max_iterations and tol_ptr < len(tolerances):
+            # here we are:
 
+            # type particle, array, array, time delta
             init_states, samples_block, logweights, logweights_prevk, acceptance = self._iterate_static_smc(
-                init_states, samples_block, logweights, logweights_prevk)
+                init_states, v, samples_block, get_grad, measurement, time_interval, logweights, logweights_prevk)
             logweightsum = logsumexp(logweights)
             neff = ess(logweights - logweightsum)
 
-            # remove this
+            # consider check
             print(" - iteration ", num_iterations + 1, " mean acceptance ", np.mean(acceptance))
 
             # Adapt step size and add to window
-            Hbar = self._adapt_step_size(acceptance, Hbar, mu, num_iterations)
+            Hbar = self._adapt_step_size(acceptance.reshape(-1), Hbar, mu, num_iterations)
             mean_stepsize = np.exp(logweights - logweightsum).T @ self.h
             array_of_steps = array_of_steps[1:] + [mean_stepsize]
 
+            print(neff, N/2) # Ideally this does that. I'd skip for now
             # Resample if necessary
-            if neff <= N / 2:
-                idx = self._resample_indices(logweights - logweightsum)
-                init_states = init_states[idx]
-                samples_block = samples_block[idx]
+            if neff <= N / 2:  #
+                idx = self._resample_indices(logweights - logweightsum)  # pick one
+                part = init_states[idx]
+                # resample the indeces
                 logweights = logweightsum + np.zeros_like(logweights) - np.log(N)
                 logweights_prevk = logweights_prevk[idx]
                 Hbar = Hbar[idx]
                 mu = mu[idx]
                 self.h = self.h[idx]
+                # sizes are kept, replicated the
+#                print(self.h.shape, mu.shape, Hbar.shape)
 
             # If enough iterations and effective sample size iss sufficiently high:
             num_iterations += 1
-            if (num_iterations >= window_size[tol_ptr]) and (neff > N / 2):
+
+            if (num_iterations >= window_size[tol_ptr]): # and (neff > N / 2):
 
                 # Get std of step size samples normalised by mean
                 this_window = array_of_steps[-window_size[tol_ptr]:]
@@ -579,7 +591,7 @@ class NUTS_optimiser(Optimiser):
                             else:
                                 break
 
-        return init_states, samples_block, logweights, logweights_prevk
+        return self.h #init_states, samples_block, logweights, logweights_prevk
 
     def _adapt_step_size(self, acceptance, Hbar, mu, k):
         """
@@ -587,12 +599,13 @@ class NUTS_optimiser(Optimiser):
 
         Acceptance comes from nuts
         """
+
         eta = 1. / float(k + self.t0)
         Hbar = (1. - eta) * Hbar + eta * (self.delta - acceptance)
         self.h = np.exp(mu - np.sqrt(k) / self.gamma * Hbar)
         return Hbar
 
-        # mass matrix
+    # mass matrix
     def _adapt_mass_matrix(self, x, logw):
         """
         mass matrix adaptation
@@ -601,7 +614,7 @@ class NUTS_optimiser(Optimiser):
         # _, var = self.estimate(self.x, self.wn)  # estimate samples in unconstrained space
 
         # Estimate mean and (diagonal) variance of samples
-        _x = x.copy()
+        _x = x.state_vector.copy()
         wn = np.exp(logw - logsumexp(logw))
         mean = wn.T @ _x
         x_shift = _x - mean
@@ -610,12 +623,11 @@ class NUTS_optimiser(Optimiser):
         # var = var[:self.D]
         # (PRH: do we need this?) only take variance of samples
         # in space we are moving in i.e. no transformed parameters
-        metric = 1 / var  # set metric to 1/var
+        metric = 1. / var  # set metric to 1/var
 
         # Set metric parameters where needed, i.e. in forwards proposal and for weight update eq.s
         self.massMatrix = np.diag(metric)
 
-    #  ok
     def _resample_indices(self, logweights):
 
         # Resample if necessary
@@ -626,16 +638,18 @@ class NUTS_optimiser(Optimiser):
         i_new = np.random.choice(i, N, p=np.exp(normalise(logweights)))  # p is the weight
         return i_new
 
-    def _get_initial_step_size(self, init_state, current_state, get_grad, measurement, time_interval=None):  # !!! X needs to be a state
+    def _get_initial_step_size(self, init_state, current_state, get_grad, measurement,
+                               time_interval=None):  # !!! X needs to be a state
         count = 0
-        start_step = self.sampler.step_size
+        start_step = self.sampler.step_size  # ok this is the same one
+
         delta_H = self._check_step_size(init_state, current_state, get_grad, start_step,
                                         measurement, time_interval)  # removed the eng
+
         init_direction = np.where(delta_H > np.log(0.5), 1, -1)
         direction = np.copy(init_direction)
 
-        while (True):
-
+        while (True) and count < 100:
             delta_H = self._check_step_size(init_state, current_state, get_grad, start_step,
                                             measurement, time_interval)  # removed rng
 
@@ -644,7 +658,7 @@ class NUTS_optimiser(Optimiser):
             delta_H = np.where(np.isnan(delta_H), -np.inf, delta_H)
 
             # Check particles to stop or which have changed direction
-            done = np.logical_or(direction ==0,#<= 1e-10,
+            done = np.logical_or(direction==0, #np.abs(direction) <= 1e-10,
                                  np.logical_or(np.logical_and(direction == -1, delta_H >= np.log(0.5)),
                                                np.logical_and(direction == 1, delta_H <= np.log(0.5))))
             direction = np.where(done, 0.0, direction)
@@ -652,7 +666,8 @@ class NUTS_optimiser(Optimiser):
             # Adjust step size - if not done, double or halve
             start_step = np.where(direction == 1, 2.0 * start_step, start_step)
             start_step = np.where(direction == -1, 0.5 * start_step, start_step)
-            print(start_step)
+            count += 1
+
             # If all done, we're finished
             if np.all(done):
                 break
@@ -662,33 +677,65 @@ class NUTS_optimiser(Optimiser):
 
         return start_step
 
-    # changed Multivariate normal to mvn
-    def _iterate_static_smc(self, init_states, old_samples_block, logweights, logweights_prevk):
+    def _iterate_static_smc(self, init_states, v, new_state_pred, get_grad, measurement,
+                            time_interval, logweights, logweights_prevk):
+        """
+        Simulate a run of the SMC to evaluate the various parameters and
+        make the correct assumptions on the stepsize and mass matrix
+        """
 
-        state_dim = self.model_list[0].ndim_state
-        block_dim = state_dim * len(self.model_list)
-        num_samples = init_states.shape[0]
+        # removed because I don't use these
+        # state_dim = self.num_dims    # self.model_list[0].ndim_state
+        # block_dim = state_dim * len(self.model_list)   # mmm
+        # num_samples = init_states.state_vector.shape[1]   # num samples
 
-        # Reset NUTS proposal with new target since the particles might have resampled - not very nice! TODO look at this
-        self.sampler = self._get_sampler(init_states)
+        # proposed using NUTS
+        x_new, v_new, acceptance = self.sampler.generate_nuts_samples(init_states, new_state_pred,
+                                                                      v, get_grad, measurement,
+                                                                      time_interval)
 
-        # Run NUTS
-        new_samples_block, new_v, v, acceptance = self.rvs(old_samples_block, self.rngs)
+        # update weights according to the optimiser  # pi_x_k
+        log_target = self.sampler.target_proposal(x_new, init_states, measurement, time_interval)
+
+        # maybe this is not needed here
+        # pi(x_k-1)
+        # pi_x_k1 = self.target_proposal(init_states, init_states, measurement, time_interval)
 
         # Update weights
-        log_target = self.sampler.target(new_samples_block)  # block_model.log_posterior(new_samples_block)
-        lkernel_logpdf = mvn(mean=np.zeros(block_dim), cov=self.massMatrix).logpdf(np.multiply(-1, new_v))
-        q_logpdf = mvn(mean=np.zeros(block_dim), cov=self.massMatrix).logpdf(v)
+
+        # evaluates the dterminants  - might not needed in the FL cases
+        jk_minus = self.sampler.integrate_lf_vec(x_new, init_states, v, get_grad, 1, self.h,
+                                         time_interval, measurement)
+        jk_plus = self.sampler.integrate_lf_vec(x_new, init_states, v_new, get_grad, -1, self.h,
+                                        time_interval, measurement)
+
+        j_cab_m = self.sampler.get_grad(jk_minus, time_interval)
+        j_cab_p = self.sampler.get_grad(jk_plus, time_interval)
+
+        determinant_m = np.linalg.det(j_cab_m)
+        determinant_p = np.linalg.det(j_cab_p)
+
+        # this is the same as pi-x-k
+        # log_target = self.sampler.target(new_samples_block)  # block_model.log_posterior(new_samples_block)
+        #lkernel_logpdf = mvn(mean=np.zeros(block_dim), cov=self.massMatrix).logpdf(np.multiply(-1, new_v))
+        lkernel_logpdf = mvn.logpdf(-v_new, mean=np.zeros(v.shape[1]), cov=self.massMatrix) / determinant_m
+        #q_logpdf = mvn(mean=np.zeros(block_dim), cov=self.massMatrix).logpdf(v)
+        q_logpdf = mvn.logpdf(v, mean=np.zeros(v.shape[1]), cov=self.massMatrix) / determinant_p
+
         # PRH: Removed normalisation for likelihood estimation
         # logweights = normalise(logweights + log_target - logweights_prevk + lkernel_logpdf - q_logpdf)
         logweights += log_target - logweights_prevk + lkernel_logpdf - q_logpdf
         logweights_prevk = log_target
 
-        return init_states, new_samples_block, logweights, logweights_prevk, acceptance
+        prediction = Prediction.from_state(init_states,
+                                           parent = init_states,
+                                           state_vector = x_new.state_vector,
+                                           timestamp = new_state_pred.timestamp,
+                                           transition_model = self.sampler.transition_model,
+                                           prior = init_states)
 
-        #
-        #
-        #     # Calculate the difference in Hamiltonian between x and x + Leapfrog with step size
+
+        return init_states, prediction, logweights, logweights_prevk, acceptance
 
     # so this function needs to be called a few times because H1 changes and the
     # differece lies in the r_prime
@@ -697,13 +744,14 @@ class NUTS_optimiser(Optimiser):
 
         # samples a new momentum
         #r = np.transpose(mvn.rvs(mean=np.zeros(self.num_dims), cov=self.sampler.MM[0]))
-        r = mvn.rvs(mean=np.zeros(self.num_dims), cov=self.sampler.MM[0], size=self.sampler.num_samples)
+        r = mvn.rvs(mean=np.zeros(self.num_dims), cov=self.sampler.MM[0],
+                    size=self.sampler.num_samples)
 
         # Take a leapfrog step with momentum r
         # integrate has new state, state, r or velovituy, ones, stepsize, time interval, and measuremnet detection
         x_prime, r_prime, _ = self.sampler.integrate_lf_vec(current_state, init_state, r, get_grad,
                                                             np.ones((self.sampler.num_samples, 1)),  # direction
-                                                            self.sampler.step_size,  # stepsize
+                                                            step_size,  # stepsize
                                                             time_interval,
                                                             measurement)
 
@@ -711,261 +759,33 @@ class NUTS_optimiser(Optimiser):
         # X0/x1 prior and detection time interval
         # Calculate the (log) Hamiltonians at the end and start of the proposal
 
+        common_value = self.sampler.target_proposal(current_state, init_state, measurement,
+                                                    time_interval=time_interval)
+
         # removed the reshape (-1,1)
-        H0 = self.sampler.target_proposal(current_state, init_state, measurement,
-                                          time_interval=time_interval) - (
-                         0.5 * np.sum(r * r, axis=1))
-        H1 = self.sampler.target_proposal(current_state, init_state, measurement,
-                                          time_interval=time_interval) - (
-                         0.5 * np.sum(r_prime * r_prime, axis=1))
+        H0 = common_value - (0.5 * np.sum(r * r, axis=1))
+        H1 = common_value - (0.5 * np.sum(r_prime * r_prime, axis=1))
 
         # calculate the difference in the Hamiltonian
         delta_H = H1 - H0
-
         return delta_H
 
+## functions extra
+def ess(logweights):
+    """Function to evaluate the effective sample size"""
+
+    mask = np.invert(np.isneginf(logweights))
+
+    inverse_neff = np.exp(logsumexp(2 * logweights[mask]))
+
+    return 1 / inverse_neff
 
 
-# class NUTS_optimisation(Optimiser):
-#     """
-#     Preprocessing to adapt the Stepsize and Mass matrix to optimal values.
-#     """
-#
-#     # criteria
-#     t0: int = Property(doc='', default=10)
-#     gamma: float = Property(doc='', default=0.05)
-#     delta: float = Property(doc='', default=0.8)
-#     min_acceptance: float = Property(doc='', default=0.4)
-#     max_acceptance: float = Property(doc='', default=0.9)
-#     sampler: Proposal = Property(doc='Sampler')   # this is where we are passing
-#
-#     # class initialisation
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#
-#     def checks(self):
-#         #print(self.sampler)
-#         print(self.sampler.num_dims)
-#         print(self.sampler.MM)
-#
-#
-#     def _run_smc_adaptive(self, init_states, samples_block,
-#                           logweights, logweights_prevk):  # removed state_dim
-#
-#         # samples block should be a state
-#
-#         # use the sampler number of dimension  [maybe]
-#         state_dim = self.sampler.num_dims
-#
-#         # This SMC sampler runs multiple iterations and adaptively tunes the step size and mass matrix
-#         # Adapted to consider a single rolling window to hopefully speed things up
-#
-#         N = logweights.shape[0]  # This N?
-#
-#         # Set up step sizes (using x_{k-L:k} where x_{k-L-1} is in log_target)
-#         self.h = self._get_initial_step_size(samples_block)  # I'd remove self rngs, sample block is a state
-#
-#         mu = np.log(10 * self.h)
-#         Hbar = np.zeros_like(self.h)
-#
-#         # ok what?
-#         tolerances = [0.5, 0.4, 0.2, 0.1]       # tolerance of standard deviation of step sizes
-#         window_size = [5, 3, 3, 3]              # windows to evaluate step size std
-#         max_iterations = 50                     # maximum number of iterations total
-#         sys.exit()
-#         # window size?
-#         max_window_size = max(window_size)
-#         tol_ptr = 0                     # index of tolerance we are considering
-#         num_iterations = 0
-#         array_of_steps = [np.inf for _ in range(max_window_size)]
-#
-#         while num_iterations < max_iterations and tol_ptr < len(tolerances):
-#
-#             init_states, samples_block, logweights, logweights_prevk, acceptance = self._iterate_static_smc(
-#                 init_states, samples_block, logweights, logweights_prevk)
-#             logweightsum = logsumexp(logweights)
-#             neff = ess(logweights - logweightsum)
-#
-#             # remove this
-#             print(" - iteration ", num_iterations + 1, " mean acceptance ", np.mean(acceptance))
-#
-#             # Adapt step size and add to window
-#             Hbar = self._adapt_step_size(acceptance, Hbar, mu, num_iterations)
-#             mean_stepsize = np.exp(logweights - logweightsum).T @ self.h
-#             array_of_steps = array_of_steps[1:] + [mean_stepsize]
-#
-#             # Resample if necessary
-#             if neff <= N / 2:
-#                 idx = self._resample_indices(logweights - logweightsum)
-#                 init_states = init_states[idx]
-#                 samples_block = samples_block[idx]
-#                 logweights = logweightsum + np.zeros_like(logweights) - np.log(N)
-#                 logweights_prevk = logweights_prevk[idx]
-#                 Hbar = Hbar[idx]
-#                 mu = mu[idx]
-#                 self.h = self.h[idx]
-#
-#             # If enough iterations and effective sample size iss sufficiently high:
-#             num_iterations += 1
-#             if (num_iterations >= window_size[tol_ptr]) and (neff > N / 2):
-#
-#                 # Get std of step size samples normalised by mean
-#                 this_window = array_of_steps[-window_size[tol_ptr]:]
-#                 relative_std =  np.abs(np.std(this_window) / np.mean(this_window))
-#
-#                 # If relative std within current tolerance:
-#                 if relative_std < tolerances[tol_ptr]:
-#                     # Move to next tolerance
-#                     tol_ptr += 1
-#                     if tol_ptr < len(tolerances):
-#                         # If not at end, advance tolerance pointer while we are still within the tolerance
-#                         self._adapt_mass_matrix(samples_block, logweights - logweightsum)
-#                         while tol_ptr < len(tolerances):
-#                             this_window = array_of_steps[-window_size[tol_ptr]:]
-#                             relative_std = np.abs(np.std(this_window) / np.mean(this_window))
-#                             if relative_std < tolerances[tol_ptr]:
-#                                 tol_ptr += 1
-#                             else:
-#                                 break
-#
-#         return init_states, samples_block, logweights, logweights_prevk
-#
-#     def _adapt_step_size(self, acceptance, Hbar, mu, k):
-#         """
-#         this works fine assuming the acceptance comes from
-#
-#         Acceptance comes from nuts
-#         """
-#         eta = 1. / float(k + self.t0)
-#         Hbar = (1. - eta) * Hbar + eta * (self.delta - acceptance)
-#         self.h = np.exp(mu - np.sqrt(k) / self.gamma * Hbar)
-#         return Hbar
-#
-#     # to have it so it does not complain
-#     def rvs(self):
-#         print('helolo')
-#
-#     # mass matrix
-#     def _adapt_mass_matrix(self, x, logw):
-#         """
-#         mass matrix adaptation
-#         """
-#
-#         #_, var = self.estimate(self.x, self.wn)  # estimate samples in unconstrained space
-#
-#         # Estimate mean and (diagonal) variance of samples
-#         _x = x.copy()
-#         wn = np.exp(logw - logsumexp(logw))
-#         mean = wn.T @ _x
-#         x_shift = _x - mean
-#         var = wn.T @ np.square(x_shift)
-#
-#         #var = var[:self.D]
-#         # (PRH: do we need this?) only take variance of samples
-#         # in space we are moving in i.e. no transformed parameters
-#         metric = 1 / var  # set metric to 1/var
-#
-#         # Set metric parameters where needed, i.e. in forwards proposal and for weight update eq.s
-#         self.massMatrix = np.diag(metric)
-# #
-#     #  ok
-#     def _resample_indices(self, logweights):
-#
-#         # Resample if necessary
-#         N = logweights.shape[0]
-#         i = np.linspace(0, N - 1, N, dtype=int)
-#
-#         # PRH: Maybe add this to algorithms.random.RNG class later
-#         i_new = np.random.choice(i, N, p=np.exp(normalise(logweights)))  # p is the weight
-#         return i_new
-#
-#     def _get_initial_step_size(self, current_state, time_interval=None):  # !!! X needs to be a state
-#
-#         # catch case where it is null
-#         if time_interval == None:
-#             time_interval = timedelta(seconds=0)
-#
-#         # so this requires the NUTS and X as state
-#         grad_x = self.sampler.get_grad(current_state, time_interval)
-#         step_size = self.sampler.step_size
-#
-#         delta_H = self._check_step_size(current_state, grad_x, step_size)  # removed the eng
-#         init_direction = np.where(delta_H > np.log(0.5), 1, -1)
-#         direction = np.copy(init_direction)
-#
-#         while (True):
-#
-#             delta_H = self._check_step_size(current_state, grad_x, step_size)  # removed rng
-#
-#             # Deal with nans in delta_H
-#             direction = np.where(np.isnan(delta_H), -1, direction)
-#             delta_H = np.where(np.isnan(delta_H), -np.inf, delta_H)
-#
-#             # Check particles to stop or which have changed direction
-#             done = np.logical_or(direction == 0,
-#                                  np.logical_or(np.logical_and(direction == -1, delta_H >= np.log(0.5)),
-#                                                np.logical_and(direction == 1, delta_H <= np.log(0.5))))
-#             direction = np.where(done, 0.0, direction)
-#
-#             # Adjust step size - if not done, double or halve
-#             step_size = np.where(direction == 1, 2.0 * step_size, step_size)
-#             step_size = np.where(direction == -1, 0.5 * step_size, step_size)
-#
-#             # If all done, we're finished
-#             if np.all(done):
-#                 break
-#
-#         # If done, halve the doubling ones back to their previous iteration
-#         step_size = np.where(init_direction == 1,  0.5 * step_size, step_size)
-#
-#         return step_size
-#
-#     # changed Multivariate normal to mvn
-#     def _iterate_static_smc(self, init_states, old_samples_block, logweights, logweights_prevk):
-#
-#         state_dim = self.model_list[0].ndim_state
-#         block_dim = state_dim * len(self.model_list)
-#         num_samples = init_states.shape[0]
-#
-#         # Reset NUTS proposal with new target since the particles might have resampled - not very nice! TODO look at this
-#         self.sampler = self._get_sampler(init_states)
-#
-#         # Run NUTS
-#         new_samples_block, new_v, v, acceptance = self.sampler.rvs(old_samples_block, self.rngs)
-#
-#         # Update weights
-#         log_target = self.sampler.target(new_samples_block) # block_model.log_posterior(new_samples_block)
-#         lkernel_logpdf = mvn(mean=np.zeros(block_dim), cov=self.massMatrix).logpdf(np.multiply(-1, new_v))
-#         q_logpdf = mvn(mean=np.zeros(block_dim), cov=self.massMatrix).logpdf(v)
-#         # PRH: Removed normalisation for likelihood estimation
-#         #logweights = normalise(logweights + log_target - logweights_prevk + lkernel_logpdf - q_logpdf)
-#         logweights += log_target - logweights_prevk + lkernel_logpdf - q_logpdf
-#         logweights_prevk = log_target
-#
-#         return init_states, new_samples_block, logweights, logweights_prevk, acceptance
-#
-# #
-# #
-# #     # Calculate the difference in Hamiltonian between x and x + Leapfrog with step size
-#     def _check_step_size(self, current_state, grad_x, step_size):  # X is a state removed rnf
-#
-#         # samples a new momentum
-#         r = np.transpose(mvn(mean=np.zeros(self.sampler.num_dims), cov=self.sampler.MM[0]))
-#
-#         #Take a leapfrog step with momentum r
-#         x_prime, r_prime, _ = self.sampler.Integrate_lf_vec(current_state, r, grad_x,
-#                                                             np.ones((self.sampler.N)),
-#                                                             step_size)
-#
-#         # so this is the nasty bit. we got here the target proposal
-#         # X0/x1 prior and detection time interval
-#         # Calculate the (log) Hamiltonians at the end and start of the proposal
-#         H0 = self.sampler.target_proposal(x1, x0, detection,
-#                              time_interval=time_interval).reshape(-1, 1) - (0.5 * np.sum(r*r, axis=1))
-#         H1 = self.sampler.target_proposal(x1, x0, detection,
-#                              time_interval=time_interval).reshape(-1, 1) - (0.5 * np.sum(r_prime*r_prime, axis=1))
-#
-#         #calculate the difference in the Hamiltonian
-#         delta_H = H1 - H0
-#
-#         return delta_H
+def normalise(logweights):
+    """Function to normalise the weights"""
+
+    mask = np.invert(np.isneginf(logweights))
+
+    log_wsum = logsumexp(logweights[mask])
+
+    return logweights - log_wsum
