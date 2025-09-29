@@ -178,8 +178,14 @@ class NUTSProposal(Proposal):
                 # get_grad = self.target_proposal(state, new_state_pred, measurement, time_interval)
                 # is this overall used?
 
+<<<<<<< Updated upstream
             # in this case we might need to pass the optimiser
             # if self.optimise:
+=======
+            # we need the jacobian
+            jk_minus = self.integrate_lf_vec(x_new, state, v, grad_x, 1, self.step_size, time_interval, measurement)
+            jk_plus = self.integrate_lf_vec(x_new, state, v_new, grad_x, -1, self.step_size, time_interval, measurement)
+>>>>>>> Stashed changes
 
             #     # when optimiser drop this, otherwise just use it
             #     print(self.step_size, self.step_size.shape, 'before')
@@ -194,6 +200,7 @@ class NUTSProposal(Proposal):
                                                                     time_interval)
                 print(np.mean(acceptance))
 
+<<<<<<< Updated upstream
                 # print(np.isclose(x_new.state_vector, state.state_vector), 'after')
                 if i == self.num_iterations:
                     x_new.timestamp = timestamp
@@ -202,6 +209,23 @@ class NUTSProposal(Proposal):
                                                        measurement, time_interval)
                 else:
                     iter_state = x_new
+=======
+            determinant_m = np.linalg.det(j_cab_m)
+            determinant_p = np.linalg.det(j_cab_p)
+
+            # qv I try with logpdf
+            q_star_minus = mvn.logpdf(-v_new, mean=np.zeros(v.shape[1]), cov=self.mass_matrix)/determinant_m
+            #qv (-v)/det(J)
+            q_star_plus =mvn.logpdf(v, mean=np.zeros(v.shape[1]), cov=self.mass_matrix)/determinant_p
+            #qv (v)/det(J)
+            # print(np.mean(q_star_minus), np.mean(q_star_plus), '|||', np.mean(pi_x_k), np.mean(pi_x_k1))
+
+            # maybe not needed these below
+            # L-kernel
+            #L = 1
+            # q(x_k|x_k-1)
+            #q = 1
+>>>>>>> Stashed changes
         else:
             # No updates
             x_new = new_state_pred
@@ -1314,4 +1338,240 @@ class NUTSProposalold(Proposal):
 
             return xminus, vminus, grad_xminus, xplus, vplus, grad_xplus, xprime, \
                 vprime, numnodes, stopped, alpha, nalpha
+<<<<<<< Updated upstream
         
+=======
+
+    # adaptive step size bit
+    def single_iteration(self):
+        """
+            Function to iter over the value and check that the stepsize works ok.
+        """
+
+        return 'paul old magic trick'
+
+    def adaptive_stepsize(self):
+        """
+            Function to optimise the stepsize and the mass matrix to improve the
+            quality and avoid hand-tuning the various parameters
+        """
+
+        converged = False
+        max_iterations =5
+        iterations = 0
+
+        #while (not converged and counter < max_iterations):
+            # run it
+
+
+        return 'pauls magic'
+
+    def _adapt_step_size(self, acceptance, Hbar, mu, k):
+        """Function to modify the stepsize"""
+        self.t0 = 10
+        self.delta = 0.8
+        # acceptance comes from the nuts code
+        eta = 1. / float(k + self.t0)
+        Hbar = (1. - eta) * Hbar + eta * (self.delta - acceptance)
+        # modify H
+        self.h = np.exp(mu - np.sqrt(k) / self.gamma * Hbar)
+
+        return Hbar
+
+
+    def _check_step_size(self, x, grad_x, step_size, rng):
+        """
+            Function to check the step size
+        """
+
+        # samples a new momentum
+        r = np.transpose(mvn.rvs(mean=np.zeros(self.num_dims), cov=self.MM[0]))
+#        r = np.transpose(rng.multivariate_normal(mu=np.zeros(self.sampler.D), cov=self.sampler.MM[0]))
+
+        #Take a leapfrog step with momentum r
+        x_prime, r_prime, _ = self.Integrate_LF_vec(x, r, grad_x, np.ones((self.sampler.N)), step_size)
+
+        # need to evaluate the target bits here
+        # Calculate the (log) Hamiltonians at the end and start of the proposal
+        H0 = self.sampler.target(x) - (0.5 * np.sum(r*r, axis=1))
+        H1 = self.sampler.target(x_prime) - (0.5 * np.sum(r_prime*r_prime, axis=1))
+
+        #calculate the difference in the Hamiltonian
+        delta_H = H1 - H0
+
+        return delta_H
+
+# ----------------------------------------------------------------------- #
+## old stuff
+
+# Set Maximum tree depth NUTS can take to stop excessive tree growth.
+# self.max_tree_depth = 5  # ~ 10
+# self.v_mapping = v_mapping
+# self.mapping = mapping
+
+# self.num_samples = N  # got it
+# self.num_dims = D  # not needed
+# self.target = p
+# self.grad_target = grad_p  ## we need to pass it independently
+#
+# if np.isscalar(h):  ## OK
+#     self.h = np.repeat(h, N)
+# else:
+#     self.h = h
+
+# self.MM = np.tile(MM, (N, 1, 1))   # mass metric
+# self.inv_MM = np.tile(np.linalg.inv(MM), (N, 1, 1))
+# self.max_tree_depth = 10  ## ok
+# self.delta_max = 100  ## ok
+
+
+# def rvs(self, state, grad):
+#     """ random variable state"""
+#
+#     return self.generate_NUTS_sample(state, self.mapping, self.v_mapping, grad)  # rng?
+
+# def NUTSLeapfrog(self, x, v, grad_x, direction):
+#     """
+#     Performs a single Leapfrog step returning the final position, velocity and gradient.
+#     """
+#
+#     v = np.add(v, (direction * self.h / 2) * grad_x)
+#     x = np.add(x, direction * self.h * v)
+#     grad_x = self.grad(x)
+#     v = np.add(v, (direction * self.h / 2) * grad_x)
+#
+#     return x, v, grad_x
+
+# def generate_NUTS_sample(self, state, mapping, v_mapping, grad_x):
+#     """
+#         Function that generates NUTS samples
+#     """
+#     # state or state/state vector
+#     # joint lnp of x and momentum r
+#     logp = self.transition_model.logpdf(state[self.mapping])  # maybe I should use the transition model? | target
+#
+#     self.H0 = logp - 0.5 * np.dot(state.state_vector[self.v_mapping],
+#                                   state.state_vector[self.v_mapping].T)
+#
+#     logu = float(self.H0 - np.random.exponential(1))  ## rng changed
+#
+#     # INITIALISE THE TREE - Initialisation phase
+#     # state, state minimal, state maximal
+#     x, x_m, x_p = state.state_vector[self.mapping], state.state_vector[self.mapping], \
+#                   state.state_vector[self.mapping]
+#
+#     # velocity
+#     v, v_m, v_p = -state.state_vector[self.v_mapping], state.state_vector[self.v_mapping], \
+#                   state.state_vector[self.v_mapping]
+#
+#     # gradients
+#     gradminus, gradplus = grad_x, grad_x
+#
+#     # times
+#     t, t_m, t_p = 0, 0, 0
+#
+#     depth = 0  # initial depth of the tree
+#     n = 1  # Initially the only valid point is the initial point.
+#     stop = 0  # Main loop: will keep going until stop == 1.
+#
+#     while stop == 0:  # loop my boy
+#         # Choose a direction. -1 = backwards, 1 = forwards.
+#         direction = int(2 * (np.random.uniform(0, 1) < 0.5) - 1)  #
+#
+#         if direction == -1:
+#             x_m, v_m, gradminus, _, _, _, x_pp, v_pp, logpprime, nprime, stopprime, \
+#             t_m, _, tprime = self.build_tree(x_m, v_m, gradminus, logu,
+#                                              direction, depth, t_m, rng)  # rng?
+#         else:
+#             _, _, _, x_p, v_p, gradplus, x_pp, v_pp, logpprime, nprime, stopprime, \
+#             _, t_p, tprime = self.build_tree(x_p, v_p, gradplus, logu,
+#                                              direction, depth, t_p, rng)
+#
+#         # Use Metropolis-Hastings to decide whether to move to a point from the
+#         # half-tree we just generated.
+#         if stopprime == 0 and np.random.uniform() < min(1., float(nprime) / float(n)):
+#             x = xprime
+#             v = vprime
+#             t = tprime
+#
+#         # Update number of valid points we've seen.
+#         n += nprime
+#
+#         # Decide if it's time to stop.
+#         stop = stopprime or self.stop_criterion(x_m, x_p, v_m, v_p)
+#
+#         # Increment depth.
+#         depth += 1
+#
+#         if depth > self.max_tree_depth:
+#             print("Max tree size in NUTS reached")
+#             break
+#
+#     # maybe ?
+#     final_state = np.zeros([state.shape])
+#
+#     final_state[self.mapping] = x
+#     final_state[self.v_mapping] = v
+#
+#     return StateVector([final_state]), t  ## something
+
+# def build_tree(self, x, v, grad_x, logu, direction, depth, t, rng):
+#     """function to build the trees"""
+#
+#     if depth == 0:
+#         xprime, vprime, gradprime = self.num_samplesUTSLeapfrog(x, v, grad_x, direction)
+#         logpprime = self.transition_model.logpdf(xprime)
+#         joint = logpprime - 0.5 * np.dot(vprime, vprime.T)
+#         nprime = int(logu < joint)
+#         stopprime = int((logu - 100.) >= joint)
+#         xminus = xprime
+#         xplus = xprime
+#         vminus = vprime
+#         vplus = vprime
+#         gradminus = gradprime
+#         gradplus = gradprime
+#         tprime = t + self.h
+#         tminus = tprime
+#         tplus = tprime
+#     else:
+#         # Recursion: Implicitly build the height j-1 left and right subtrees.
+#         xminus, vminus, gradminus, xplus, vplus, gradplus, xprime, vprime, logpprime, \
+#         nprime, stopprime, tminus, tplus, tprime = self.build_tree(
+#             x, v, grad_x, logu, direction, depth - 1, t, np.random)
+#
+#         # No need to keep going if the stopping criteria were met in the first subtree.
+#         if stopprime == 0:
+#             if direction == -1:
+#                 xminus, vminus, gradminus, _, _, _, xprime2, vprime2, logpprime2, \
+#                 nprime2, stopprime2, tminus, _, tprime2 = self.build_tree(xminus, vminus,
+#                                                                           gradminus, logu, direction,
+#                                                                           depth - 1, tminus, np.random)
+#             else:
+#                 _, _, _, xplus, vplus, gradplus, xprime2, vprime2, logpprime2, \
+#                 nprime2, stopprime2, _, tplus, tprime2 = self.build_tree(xplus, vplus,
+#                                                                          gradplus, logu, direction,
+#                                                                          depth - 1, tplus, np.random)
+#
+#             if rng.uniform() < (float(nprime2) / max(float(int(nprime) + int(nprime2)), 1.)):
+#                 xprime = xprime2
+#                 logpprime = logpprime2
+#                 vprime = vprime2
+#                 tprime = tprime2
+#
+#             # Update the number of valid points.
+#             nprime = int(nprime) + int(nprime2)
+#
+#             # Update the stopping criterion.
+#             stopprime = int(stopprime or stopprime2 or self.stop_criterion(xminus, xplus, vminus, vplus))
+#
+#     return xminus, vminus, gradminus, xplus, vplus, gradplus, xprime, vprime, \
+#            logpprime, nprime, stopprime, tminus, tplus, tprime
+
+# def stop_criterion(self, x_m, x_p, r_m, r_p):
+#     """
+#     Checks if a U-turn is present in the furthest nodes in the NUTS tree
+#     """
+#     return (np.dot((x_p - x_m), r_m.T) < 0) or \
+#            (np.dot((x_p - x_m), r_p.T) < 0)
+#
+>>>>>>> Stashed changes
